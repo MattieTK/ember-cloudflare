@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { CloseCode, parseServerFrame, type Account, type DirectoryUser, type Me, type RoomId, type User, type UserId, type WorkspaceServerFrame } from "@ember/protocol";
+import { withSkinToneOf } from "@/hooks/use-skin-tone";
 import { fetchMe, fetchSidebar, isSignedOut, workspaceSocketUrl, type SidebarCopy } from "@/lib/api";
 import { reconnectingSocket } from "@/lib/reconnecting-socket";
 import { NO_ROOM_LIST, roomListReducer, type RoomAnswer } from "@/lib/room-list";
@@ -60,7 +61,8 @@ interface Directory {
 const NO_DIRECTORY: Directory = { people: new Map(), reload: async () => {}, update: () => {} };
 
 /** Whether `you` and `me` are the same person, as they are now. */
-const isSame = (you: Me, me: Me) => you.id === me.id && you.name === me.name && you.administrator === me.administrator;
+const isSame = (you: Me, me: Me) =>
+  you.id === me.id && you.name === me.name && you.administrator === me.administrator && (you.skinTone ?? 0) === (me.skinTone ?? 0);
 
 /**
  * Someone's sidebar, which loads again each time the tab's workspace socket connects, the first time
@@ -134,7 +136,7 @@ export function useSidebar(
   });
   const changed = useEffectEvent((user: DirectoryUser) => {
     directory.update(user);
-    if (user.id === me.id) signsIn({ id: user.id, name: user.name, administrator: user.role === "administrator" });
+    if (user.id === me.id) signsIn({ ...heard.current, name: user.name, administrator: user.role === "administrator" });
   });
 
   useEffect(() => {
@@ -205,6 +207,9 @@ export function useSidebar(
           return change({ type: "involved", roomId: frame.roomId, involvement: frame.involvement });
         case "favorites.changed":
           return change({ type: "starred", favorites: frame.favorites });
+        case "skin_tone.changed":
+          toldOf.you = true;
+          return signsIn(withSkinToneOf(heard.current, frame.skinTone));
         case "invitation.dismissed":
           return change({ type: "invitation dismissed" });
         case "rooms.reordered":

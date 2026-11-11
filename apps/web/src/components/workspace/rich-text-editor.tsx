@@ -1,6 +1,9 @@
 import { configure, Extension, Lexical } from "@37signals/lexxy";
+import type { SkinTone } from "@ember/protocol";
 import { MENTION_CONTENT_TYPE, OPENGRAPH_EMBED_CONTENT_TYPE } from "@ember/richtext/dom";
-import { useEffect, useEffectEvent, useImperativeHandle, useRef, type Ref } from "react";
+import { useEffect, useEffectEvent, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { closedCode, loadedEmoji, loadEmoji, rememberEmoji, typedCode } from "@/lib/emoji";
+import { EmojiSuggestions, useEmojiSuggestions } from "./emoji-suggestions";
 import "./rich-text-editor.css";
 
 // The editor, Lexxy 0.9.24, set up as Campfire sets it up. This is a chunk of its own, loaded as the
@@ -120,6 +123,54 @@ function lookAgainAsListShows(lexxy: LexxyEditor): MutationObserver {
   return observer;
 }
 
+/**
+ * The text before the cursor in its paragraph's run of plain text, where a :code can be typed, or null
+ * where it can't: with text selected, or in code. Read in an update or a read of the editor's state.
+ */
+function $textBeforeCursor(): string | null {
+  const selection = Lexical.$getSelection();
+  if (!Lexical.$isRangeSelection(selection) || !selection.isCollapsed()) return null;
+  const node = selection.anchor.getNode();
+  if (!Lexical.$isTextNode(node) || node.hasFormat("code") || node.getParent()?.getType() === "code") return null;
+  return node.getTextContent().slice(0, selection.anchor.offset);
+}
+
+/** Writes `text` in place of the `length` characters before the cursor, leaving the cursor after it. */
+function replaceBeforeCursor(lexxy: LexxyEditor, length: number, text: string): void {
+  lexxy.editor.update(() => {
+    const selection = Lexical.$getSelection();
+    if (!Lexical.$isRangeSelection(selection) || !selection.isCollapsed()) return;
+    const node = selection.anchor.getNode();
+    if (Lexical.$isTextNode(node)) node.spliceText(selection.anchor.offset - length, length, text, true);
+  });
+}
+
+/**
+ * Puts the emoji of a code that `colon` closes, typed after the text before the cursor, in the code's
+ * place, in `skinTone` if it comes in tones, returning whether there was one. The emoji have to have loaded.
+ */
+function closeCode(lexxy: LexxyEditor, colon: ":" | "", skinTone: SkinTone): boolean {
+  const index = loadedEmoji();
+  const before = lexxy.editor.getEditorState().read($textBeforeCursor);
+  const closed = index && before !== null ? closedCode(index, before + colon, skinTone) : null;
+  if (!closed) return false;
+  rememberEmoji(closed.base);
+  replaceBeforeCursor(lexxy, closed.typed.length - colon.length, closed.emoji);
+  return true;
+}
+
+/** Where the `length` characters before the cursor are on the page, which the emoji a code finds open by. */
+function textBeforeCursorRect(length: number): DOMRect | null {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0).cloneRange();
+  if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset >= length) {
+    range.setStart(range.startContainer, range.startOffset - length);
+  }
+  const rect = range.getBoundingClientRect();
+  return rect.height > 0 ? rect : null;
+}
+
 /** A `<lexxy-editor>`, as far as this uses it. */
 type LexxyEditor = HTMLElement & {
   value: string;
@@ -131,8 +182,18 @@ type LexxyEditor = HTMLElement & {
   readonly contents: { textBackUntil(text: string): string };
   readonly selection: { placeCursorAtTheEnd(): void };
   /** Its Lexical editor. */
-  readonly editor: { update(change: () => void, options: { discrete: boolean }): void };
+  readonly editor: {
+    update(change: () => void, options?: { discrete: boolean }): void;
+    getEditorState(): EditorState;
+    /** Calls `listener` after each change to what's written or where the cursor is, until the function it returns is called. */
+    registerUpdateListener(listener: (update: { editorState: EditorState }) => void): () => void;
+  };
 };
+
+/** What's written in a Lexical editor, and where the cursor is, at some moment. */
+interface EditorState {
+  read<T>(reading: () => T): T;
+}
 
 /** A link pasted in the editor, as Lexxy tells of it with `lexxy:insert-link`. */
 export interface PastedLink {
@@ -148,7 +209,7 @@ export interface RichTextEditorHandle {
   clear(): void;
   /** Whether nothing but white space is written. */
   isBlank(): boolean;
-  /** Whether a list it offers, such as the people to mention, is open, which takes Enter for itself. */
+  /** Whether a list it offers, such as the people to mention or emoji, is open, which takes Enter for itself. */
   hasOpenPrompt(): boolean;
   focus(): void;
   /** Writes `markup` in place of what's written, then takes focus with the cursor at the end, as Quote does. */
@@ -184,6 +245,9 @@ interface Props {
 /**
  * A `<lexxy-editor>`. React would set its attributes as properties, and some of Lexxy's can only be
  * read or throw before it's connected, so it's built here, in a `<div>` React leaves alone.
+ *
+ * Emoji are typed by their :codes, as in Slack: a colon and two letters or more list the emoji they find,
+ * Enter or Tab putting the one picked in the code's place, and a code's closing colon puts its emoji there.
  */
 export default function RichTextEditor({
   label,
@@ -200,6 +264,16 @@ export default function RichTextEditor({
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<LexxyEditor>(null);
+  const emojiList = useId();
+  // What's typed of a :code that ends at the cursor, after its colon.
+  const [typed, setTyped] = useState<string | null>(null);
+  const emoji = useEmojiSuggestions(typed, (match) => {
+    if (editor.current && typed !== null) replaceBeforeCursor(editor.current, typed.length + 1, `${match.emoji} `);
+  });
+  const emojiOpen = useRef(false);
+  useLayoutEffect(() => {
+    emojiOpen.current = emoji.open;
+  });
 
   useImperativeHandle(ref, () => ({
     value: () => editor.current?.value ?? "",
@@ -220,7 +294,7 @@ export default function RichTextEditor({
       );
     },
     isBlank: () => editor.current?.isBlank ?? true,
-    hasOpenPrompt: () => editor.current?.hasOpenPrompt ?? false,
+    hasOpenPrompt: () => emojiOpen.current || (editor.current?.hasOpenPrompt ?? false),
     focus: () => editor.current?.focus(),
     // Campfire's composer_controller.js#replaceMessageContent, for what Quote writes.
     replace: (markup) => {
@@ -232,6 +306,19 @@ export default function RichTextEditor({
     },
   }));
 
+  // The keys the emoji list takes, and a code's closing colon, are kept from the editor and whoever's listening.
+  // A colon typed before the emoji have loaded closes its code once they have, if the cursor's still after it.
+  const emojiKeyDown = useEffectEvent((lexxy: LexxyEditor, event: KeyboardEvent) => {
+    if (emoji.keyDown(event)) return true;
+    if (event.key !== ":" || event.isComposing) return false;
+    if (!loadedEmoji()) {
+      void loadEmoji().then(() => closeCode(lexxy, "", emoji.skinTone));
+      return false;
+    }
+    if (!closeCode(lexxy, ":", emoji.skinTone)) return false;
+    event.preventDefault();
+    return true;
+  });
   const changed = useEffectEvent(() => onChange?.());
   const keyPressed = useEffectEvent((event: KeyboardEvent) => onKeyDown?.(event));
   const linkPasted = useEffectEvent((link: PastedLink) => onLinkPasted?.(link));
@@ -254,11 +341,28 @@ export default function RichTextEditor({
       if ((event as CustomEvent).detail !== LOOK_AGAIN) changed();
     });
     lexxy.addEventListener("lexxy:initialize", () => ready(lexxy), { once: true });
+    let stopReadingCodes = () => {};
+    lexxy.addEventListener(
+      "lexxy:initialize",
+      () => {
+        stopReadingCodes = lexxy.editor.registerUpdateListener(({ editorState }) => {
+          const before = editorState.read($textBeforeCursor);
+          setTyped(before === null ? null : typedCode(before));
+        });
+      },
+      { once: true },
+    );
+    // The list goes as the text loses focus, and shows again as you type on.
+    lexxy.addEventListener("focusout", (event) => {
+      if (!lexxy.contains(event.relatedTarget as Node | null)) setTyped(null);
+    });
     lexxy.addEventListener("lexxy:insert-link", (event) => linkPasted((event as CustomEvent<PastedLink>).detail));
     // Before Lexical's own handlers, which are on the contenteditable inside, and only for the text's
     // keys, not those of the toolbar's buttons and fields.
     const keyDown = (event: KeyboardEvent) => {
-      if (lexxy.editorContentElement?.contains(event.target as Node)) keyPressed(event);
+      if (!lexxy.editorContentElement?.contains(event.target as Node)) return;
+      if (emojiKeyDown(lexxy, event)) event.stopPropagation();
+      else keyPressed(event);
     };
     lexxy.addEventListener("keydown", keyDown, { capture: true });
     // Inside the editor, which finds it there as it connects.
@@ -267,6 +371,7 @@ export default function RichTextEditor({
     editor.current = lexxy;
     host.current!.append(lexxy);
     return () => {
+      stopReadingCodes();
       prompting?.disconnect();
       lexxy.remove();
       editor.current = null;
@@ -283,5 +388,24 @@ export default function RichTextEditor({
     }
   }, [label, placeholder]);
 
-  return <div ref={host} className="contents" />;
+  // The text names the emoji list while it's open, and the emoji Enter would pick, as Lexxy's @ prompt does.
+  useEffect(() => {
+    const text = editor.current?.editorContentElement;
+    if (!text || !emoji.open) return;
+    text.setAttribute("aria-controls", emojiList);
+    text.setAttribute("aria-activedescendant", `${emojiList}-${emoji.active}`);
+    return () => {
+      text.removeAttribute("aria-controls");
+      text.removeAttribute("aria-activedescendant");
+    };
+  }, [emoji.open, emoji.active, emojiList]);
+
+  return (
+    <>
+      <div ref={host} className="contents" />
+      {typed !== null && (
+        <EmojiSuggestions id={emojiList} state={emoji} typed={typed} anchor={() => textBeforeCursorRect(typed.length + 1)} />
+      )}
+    </>
+  );
 }

@@ -551,6 +551,33 @@ describe("Welcome card for administrators, until they dismiss it", () => {
   });
 });
 
+describe("Default skin tone", () => {
+  /** Ada's sidebar, connected, telling `onSessionChanged`. */
+  async function connected() {
+    const onSessionChanged = vi.fn();
+    renderHook(() => useSidebar(ada, onSessionChanged, { people: new Map(), reload: async () => {}, update: () => {} }));
+    await settle();
+    socket().connect();
+    await settle();
+    return onSessionChanged;
+  }
+
+  it("gives the page the tone Ada chose in another tab or browser, and the default again", async () => {
+    const onSessionChanged = await connected();
+    socket().receive({ type: "skin_tone.changed", skinTone: 4 });
+    expect(onSessionChanged).toHaveBeenLastCalledWith({ ...ada, skinTone: 4 });
+    socket().receive({ type: "skin_tone.changed", skinTone: 0 });
+    expect(onSessionChanged).toHaveBeenLastCalledWith(ada);
+  });
+
+  it("keeps her tone when her role changes", async () => {
+    const onSessionChanged = await connected();
+    socket().receive({ type: "skin_tone.changed", skinTone: 2 });
+    socket().receive({ type: "user.updated", user: listed(ada, "administrator") });
+    expect(onSessionChanged).toHaveBeenLastCalledWith({ ...ada, administrator: true, skinTone: 2 });
+  });
+});
+
 describe("Shared room order", () => {
   it("loads its rooms again a while after the workspace socket says the shared order changed, once for the news that comes meanwhile", async () => {
     const onReload = vi.fn(async () => {});

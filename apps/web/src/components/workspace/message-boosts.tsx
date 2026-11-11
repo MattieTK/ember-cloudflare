@@ -5,8 +5,10 @@ import { ArrowUp, Emoji, Minus, Xmark } from "@/components/icons/iconoir";
 import { useNameOf } from "@/hooks/use-directory";
 import { RefusedUnboosts, RoomConnection } from "@/hooks/use-room";
 import { useScrollIntoView } from "@/hooks/use-scroll-into-view";
+import { closedCode, loadedEmoji, loadEmoji, rememberEmoji, typedCode } from "@/lib/emoji";
 import { pressedAlone } from "@/lib/keyboard";
 import { cn } from "@/lib/utils";
+import { EmojiSuggestions, useEmojiSuggestions } from "./emoji-suggestions";
 import type { MessageActions } from "./message-item";
 import { AvatarLink, UserAvatar } from "./user-avatar";
 
@@ -179,13 +181,59 @@ function BoostPill({ boost, hint, onDelete }: { boost: Boost; hint: string; onDe
  * New boost's form, a pill in Add a boost's place: your avatar and a field for up to 16 characters that
  * can't start with a space, as wide as what's written, then Add reaction once something is, and an X that
  * cancels, as Escape does. How many characters are left shows once five or fewer are. It scrolls itself
- * into view, as its scroll-into-view controller does.
+ * into view, as its scroll-into-view controller does. Emoji can be found by their :codes, as in the
+ * composer.
  */
 function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: Ref<HTMLInputElement>; onAdd: (content: string) => void; onCancel: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const hint = useId();
+  const emojiList = useId();
   const [content, setContent] = useState("");
+  // Where the cursor is in the field, while it has focus, and where to put it once an emoji's put in a
+  // code's place, as it shows, before the next key's typed.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [placedCursor, setPlacedCursor] = useState<number | null>(null);
   const left = MAX_BOOST_LENGTH - content.length;
+  const typed = cursor === null ? null : typedCode(content.slice(0, cursor));
+
+  // Writes `text` in place of the `length` characters before the cursor, if what's written then fits.
+  const replaceBeforeCursor = (length: number, text: string) => {
+    const field = fieldOf(form.current);
+    if (!field) return;
+    const at = field.selectionStart ?? field.value.length;
+    const replaced = field.value.slice(0, at - length) + text;
+    const written = replaced + field.value.slice(at);
+    if (written.length > MAX_BOOST_LENGTH) return;
+    setContent(written);
+    setCursor(replaced.length);
+    setPlacedCursor(replaced.length);
+  };
+
+  const emoji = useEmojiSuggestions(typed, (match) => {
+    if (typed !== null) replaceBeforeCursor(typed.length + 1, match.emoji);
+  });
+
+  // A code's closing colon, `colon` typed after the text before the cursor, puts its emoji in its place.
+  // One typed before the emoji have loaded does once they have, if the cursor's still after it.
+  const closeCode = (colon: ":" | "") => {
+    const field = fieldOf(form.current);
+    const index = loadedEmoji();
+    if (!index || !field) {
+      if (colon) void loadEmoji().then(() => closeCode(""));
+      return false;
+    }
+    const closed = closedCode(index, field.value.slice(0, field.selectionStart ?? 0) + colon, emoji.skinTone);
+    if (!closed) return false;
+    rememberEmoji(closed.base);
+    replaceBeforeCursor(closed.typed.length - colon.length, closed.emoji);
+    return true;
+  };
+
+  useLayoutEffect(() => {
+    if (placedCursor === null) return;
+    fieldOf(form.current)?.setSelectionRange(placedCursor, placedCursor);
+    setPlacedCursor(null);
+  }, [placedCursor]);
 
   useScrollIntoView(form);
 
@@ -212,6 +260,8 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
           type="text"
           aria-label="Custom reaction"
           aria-describedby={hint}
+          aria-controls={emoji.open ? emojiList : undefined}
+          aria-activedescendant={emoji.open ? `${emojiList}-${emoji.active}` : undefined}
           autoFocus
           autoComplete="off"
           autoCorrect="off"
@@ -222,13 +272,26 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
           // The field is as wide as what's written, which its placeholder would keep it wider than.
           placeholder={content === "" ? "Emoji or a word" : ""}
           value={content}
-          onChange={(event) => setContent(event.currentTarget.value)}
+          onChange={(event) => {
+            setContent(event.currentTarget.value);
+            setCursor(event.currentTarget.selectionStart);
+          }}
+          onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
+          onFocus={(event) => setCursor(event.currentTarget.selectionStart)}
+          onBlur={() => setCursor(null)}
+          onKeyDown={(event) => {
+            const taken = emoji.keyDown(event.nativeEvent) || (event.key === ":" && !event.nativeEvent.isComposing && closeCode(":"));
+            if (!taken) return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           className="block min-w-[5ch] field-sizing-content bg-transparent text-[0.8rem] text-foreground outline-none placeholder:text-muted-foreground touch:text-base"
         />
       </label>
       <span id={hint} hidden>
-        Up to 16 characters.
+        Up to 16 characters. Type a colon and a word to find emoji.
       </span>
+      {typed !== null && <EmojiSuggestions id={emojiList} state={emoji} typed={typed} anchor={() => form.current?.getBoundingClientRect() ?? null} />}
       {left <= 5 && (
         <span className={cn("shrink-0 text-[11px] leading-none whitespace-nowrap text-muted-foreground tabular-nums", left === 0 && "text-negative")}>{left} left</span>
       )}
@@ -251,3 +314,6 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
     </form>
   );
 }
+
+/** The custom reaction's field, in its form. */
+const fieldOf = (form: HTMLFormElement | null) => form?.querySelector<HTMLInputElement>("input[name=content]") ?? null;

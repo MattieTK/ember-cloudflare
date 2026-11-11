@@ -11,10 +11,28 @@ declare module "@37signals/lexxy" {
     updateFromJSON(serialized: Record<string, unknown>): this;
   }
 
-  /** The parts of Lexical's RangeSelection that the composer uses: the format of what's typed at it. */
+  /** The parts of Lexical's LexicalNode that the editor uses. */
+  interface LexicalNode {
+    getType(): string;
+    getParent(): LexicalNode | null;
+  }
+
+  /** The parts of Lexical's TextNode that :codes use: the text, and replacing some of it. */
+  interface TextNode extends LexicalNode {
+    getTextContent(): string;
+    hasFormat(format: "code"): boolean;
+    spliceText(offset: number, deleteCount: number, text: string, moveSelection?: boolean): TextNode;
+  }
+
+  /**
+   * The parts of Lexical's RangeSelection that the editor uses: the format of what's typed at it, and
+   * where the cursor is.
+   */
   interface RangeSelection {
     setFormat(format: number): void;
     setStyle(style: string): void;
+    isCollapsed(): boolean;
+    readonly anchor: { readonly offset: number; getNode(): LexicalNode };
   }
 
   /** The Lexical Lexxy is built on, whose nodes an extension's must extend. */
@@ -22,6 +40,7 @@ declare module "@37signals/lexxy" {
     ElementNode: typeof ElementNode;
     $getSelection(): unknown;
     $isRangeSelection(selection: unknown): selection is RangeSelection;
+    $isTextNode(node: unknown): node is TextNode;
   };
 
   /** What an editor allows and holds beyond Lexxy's own. */
