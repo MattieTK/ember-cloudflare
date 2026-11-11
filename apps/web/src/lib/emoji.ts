@@ -66,9 +66,15 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 let loading: Promise<EmojiIndex> | null = null;
 let loaded: EmojiIndex | null = null;
 
-/** The emoji, loaded once. */
+/** The emoji, loaded once, or tried again the next time they're wanted if they couldn't be. */
 export function loadEmoji(): Promise<EmojiIndex> {
-  loading ??= import("./emoji-data.json").then(({ default: rows }) => (loaded = indexOf(rows as Row[])));
+  loading ??= import("./emoji-data.json").then(
+    ({ default: rows }) => (loaded = indexOf(rows as Row[])),
+    (error: unknown) => {
+      loading = null;
+      throw error;
+    },
+  );
   return loading;
 }
 

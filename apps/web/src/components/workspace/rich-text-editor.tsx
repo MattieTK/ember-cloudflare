@@ -124,16 +124,27 @@ function lookAgainAsListShows(lexxy: LexxyEditor): MutationObserver {
 }
 
 /**
- * The text before the cursor in its paragraph's run of plain text, where a :code can be typed, or null
- * where it can't: with text selected, or in code. Read in an update or a read of the editor's state.
+ * The text before the cursor in its paragraph's run of plain text, where a :code can be typed, with that
+ * run's node, or null where it can't: with text selected, or in code. Read in an update or a read of the
+ * editor's state.
  */
-function $textBeforeCursor(): string | null {
+function $textBeforeCursor(): { node: string; text: string } | null {
   const selection = Lexical.$getSelection();
   if (!Lexical.$isRangeSelection(selection) || !selection.isCollapsed()) return null;
   const node = selection.anchor.getNode();
   if (!Lexical.$isTextNode(node) || node.hasFormat("code") || node.getParent()?.getType() === "code") return null;
-  return node.getTextContent().slice(0, selection.anchor.offset);
+  return { node: node.getKey(), text: node.getTextContent().slice(0, selection.anchor.offset) };
 }
+
+/** Updates that write what was written before, which a colon in them doesn't close a code in. */
+const NOT_TYPED = ["historic", "paste", "collaboration"];
+
+/**
+ * Whether `now`, the text before the cursor after an update, is `then`'s with what was just typed after
+ * it, ending in a colon, in the same run of text.
+ */
+const typedColon = (then: { node: string; text: string } | null, now: { node: string; text: string }) =>
+  then?.node === now.node && now.text.length > then.text.length && now.text.startsWith(then.text) && now.text.endsWith(":");
 
 /** Writes `text` in place of the `length` characters before the cursor, leaving the cursor after it. */
 function replaceBeforeCursor(lexxy: LexxyEditor, length: number, text: string): void {
@@ -152,7 +163,7 @@ function replaceBeforeCursor(lexxy: LexxyEditor, length: number, text: string): 
 function closeCode(lexxy: LexxyEditor, colon: ":" | "", skinTone: SkinTone): boolean {
   const index = loadedEmoji();
   const before = lexxy.editor.getEditorState().read($textBeforeCursor);
-  const closed = index && before !== null ? closedCode(index, before + colon, skinTone) : null;
+  const closed = index && before !== null ? closedCode(index, before.text + colon, skinTone) : null;
   if (!closed) return false;
   rememberEmoji(closed.base);
   replaceBeforeCursor(lexxy, closed.typed.length - colon.length, closed.emoji);
@@ -185,8 +196,13 @@ type LexxyEditor = HTMLElement & {
   readonly editor: {
     update(change: () => void, options?: { discrete: boolean }): void;
     getEditorState(): EditorState;
-    /** Calls `listener` after each change to what's written or where the cursor is, until the function it returns is called. */
-    registerUpdateListener(listener: (update: { editorState: EditorState }) => void): () => void;
+    /** Whether an input method is composing what's typed. */
+    isComposing(): boolean;
+    /**
+     * Calls `listener` after each change to what's written or where the cursor is, with the nodes whose
+     * text it changed and what made it, until the function it returns is called.
+     */
+    registerUpdateListener(listener: (update: { editorState: EditorState; dirtyLeaves: ReadonlySet<string>; tags: ReadonlySet<string> }) => void): () => void;
   };
 };
 
@@ -306,18 +322,20 @@ export default function RichTextEditor({
     },
   }));
 
-  // The keys the emoji list takes, and a code's closing colon, are kept from the editor and whoever's listening.
-  // A colon typed before the emoji have loaded closes its code once they have, if the cursor's still after it.
+  // The keys the emoji list takes, and a code's closing colon, are kept from the editor and whoever's
+  // listening, the colon going unwritten.
   const emojiKeyDown = useEffectEvent((lexxy: LexxyEditor, event: KeyboardEvent) => {
     if (emoji.keyDown(event)) return true;
-    if (event.key !== ":" || event.isComposing) return false;
-    if (!loadedEmoji()) {
-      void loadEmoji().then(() => closeCode(lexxy, "", emoji.skinTone));
-      return false;
-    }
-    if (!closeCode(lexxy, ":", emoji.skinTone)) return false;
+    if (event.key !== ":" || event.isComposing || !closeCode(lexxy, ":", emoji.skinTone)) return false;
     event.preventDefault();
     return true;
+  });
+  // A closing colon the editor wrote anyway closes its code once it's written: one that came before the
+  // emoji loaded, once they have, if the cursor's still after it, and one from a keyboard that doesn't
+  // say which key it was, as phones' often don't.
+  const colonWritten = useEffectEvent((lexxy: LexxyEditor) => {
+    if (loadedEmoji()) closeCode(lexxy, "", emoji.skinTone);
+    else loadEmoji().then(() => closeCode(lexxy, "", emoji.skinTone), () => {});
   });
   const changed = useEffectEvent(() => onChange?.());
   const keyPressed = useEffectEvent((event: KeyboardEvent) => onKeyDown?.(event));
@@ -345,9 +363,16 @@ export default function RichTextEditor({
     lexxy.addEventListener(
       "lexxy:initialize",
       () => {
-        stopReadingCodes = lexxy.editor.registerUpdateListener(({ editorState }) => {
-          const before = editorState.read($textBeforeCursor);
-          setTyped(before === null ? null : typedCode(before));
+        // What was before the cursor last, outside what an input method's composing.
+        let then: { node: string; text: string } | null = null;
+        stopReadingCodes = lexxy.editor.registerUpdateListener(({ editorState, dirtyLeaves, tags }) => {
+          const now = editorState.read($textBeforeCursor);
+          setTyped(now === null ? null : typedCode(now.text));
+          if (lexxy.editor.isComposing()) return;
+          const colon = now !== null && dirtyLeaves.has(now.node) && !NOT_TYPED.some((tag) => tags.has(tag)) && typedColon(then, now);
+          then = now;
+          // After this update, as one of its own.
+          if (colon) queueMicrotask(() => colonWritten(lexxy));
         });
       },
       { once: true },

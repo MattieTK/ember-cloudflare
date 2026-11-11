@@ -1322,6 +1322,40 @@ describe("Custom reactions", () => {
     expect(customField()).toHaveValue("🔥 hot :nope:");
   });
 
+  it("puts a :code's emoji in its place as a phone's keyboard writes its closing colon without saying which key it was", async () => {
+    const { user } = show(message());
+    await newBoost(user);
+    await user.type(customField(), ":fire");
+    await screen.findByRole("listbox");
+    fireEvent.keyDown(customField(), { key: "Unidentified" });
+    fireEvent.input(customField(), { target: { value: ":fire:" }, inputType: "insertText", data: ":" });
+    expect(customField()).toHaveValue("🔥");
+  });
+
+  it("leaves a :code as it's written when its closing colon is typed over selected text", async () => {
+    const { user } = show(message());
+    await newBoost(user);
+    await user.type(customField(), ":fireoops");
+    (customField() as HTMLInputElement).setSelectionRange(5, 9);
+    fireEvent.select(customField());
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await user.keyboard(":");
+    expect(customField()).toHaveValue(":fire:");
+  });
+
+  it("keeps the emoji list by its field as the page scrolls", async () => {
+    const { user } = show(message());
+    await newBoost(user);
+    const where = vi.spyOn(customField().closest("form")!, "getBoundingClientRect").mockReturnValue(new DOMRect(20, 100, 120, 32));
+    await user.type(customField(), ":fire");
+    const list = (await screen.findByRole("listbox")).parentElement!;
+    expect(list.style.top).toBe("138px");
+    where.mockReturnValue(new DOMRect(20, 400, 120, 32));
+    fireEvent.scroll(document.body);
+    expect(list.style.top).toBe("");
+    expect(list.style.bottom).toBe(`${window.innerHeight - 400 + 6}px`);
+  });
+
   it("shuts the emoji list on Escape, keeping the form, which a second Escape cancels", async () => {
     const { actions, user } = show(message());
     await newBoost(user);

@@ -159,11 +159,16 @@ export function useSidebar(
       }, Math.random() * RELOAD_SPREAD_MS);
     };
 
-    // What this connection has said changed, the person signed in or the workspace, which can come
-    // before its welcome. The welcome may have read it before that change, so it doesn't undo it. Each
-    // try starts afresh, after a close or a socket that stopped answering alike.
-    let toldOf = { you: false, account: false };
-    const onConnecting = () => void (toldOf = { you: false, account: false });
+    // What this connection has said changed, the person signed in (their name and role, or their skin
+    // tone) or the workspace, which can come before its welcome. The welcome may have read it before that
+    // change, so it doesn't undo it, but gives the rest. Each try starts afresh, after a close or a socket
+    // that stopped answering alike.
+    let toldOf = { you: false, tone: false, account: false };
+    const onConnecting = () => void (toldOf = { you: false, tone: false, account: false });
+    const welcomed = (you: Me) => {
+      const named = toldOf.you ? { ...you, name: heard.current.name, administrator: heard.current.administrator } : you;
+      return toldOf.tone ? withSkinToneOf(named, heard.current.skinTone ?? 0) : named;
+    };
     const heardOf = (roomId: RoomId) => roomFrames.current.lastOf.set(roomId, ++roomFrames.current.count);
     const onMessage = (data: string) => {
       const frame = parseServerFrame<WorkspaceServerFrame>(data);
@@ -175,7 +180,7 @@ export function useSidebar(
             return sessionChanged(frame.you);
           }
           workspace.connected();
-          if (!toldOf.you) signsIn(frame.you);
+          signsIn(welcomed(frame.you));
           if (!toldOf.account) accountChanged(frame.account);
           return reload();
         case "room.saved":
@@ -208,7 +213,7 @@ export function useSidebar(
         case "favorites.changed":
           return change({ type: "starred", favorites: frame.favorites });
         case "skin_tone.changed":
-          toldOf.you = true;
+          toldOf.tone = true;
           return signsIn(withSkinToneOf(heard.current, frame.skinTone));
         case "invitation.dismissed":
           return change({ type: "invitation dismissed" });

@@ -42,6 +42,18 @@ test.describe("Emoji by their :codes", () => {
     await expect(ada.composer().locator("code")).toHaveText(":fire:");
   });
 
+  test("puts a code's emoji in its place as a keyboard writes its closing colon without a key, as phones' do", async ({ members }) => {
+    const ada = await members.signIn("Ada");
+
+    await ada.composer().pressSequentially("Party :tada");
+    await expect(offered(ada).first()).toHaveText("🎉:tada:");
+    // Written as a soft keyboard writes it, with no key to say what it was.
+    await ada.page.keyboard.insertText(":");
+    await expect(ada.composer()).toHaveText("Party 🎉");
+    await ada.composer().pressSequentially(" now");
+    await expect(ada.composer()).toHaveText("Party 🎉 now");
+  });
+
   test("opens no list for a time or a smiley, and Enter sends as it would", async ({ members }) => {
     const ada = await members.signIn("Ada");
 

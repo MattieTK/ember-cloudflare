@@ -13,6 +13,7 @@ declare module "@37signals/lexxy" {
 
   /** The parts of Lexical's LexicalNode that the editor uses. */
   interface LexicalNode {
+    getKey(): string;
     getType(): string;
     getParent(): LexicalNode | null;
   }

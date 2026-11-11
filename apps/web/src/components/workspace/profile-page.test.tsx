@@ -621,6 +621,27 @@ describe("Skin tone on your profile", () => {
     expect(sent).toEqual([["PUT", { skinTone: 3 }]]);
   });
 
+  it("saves one tone at a time, then only the last chosen meanwhile, so the server ends with the last", async () => {
+    const answers: Array<() => void> = [];
+    serve({
+      toned: () => new Promise<Response>((resolve) => answers.push(() => resolve(Response.json({ skinTone: answers.length })))),
+    });
+    const { user, onSkinToneChanged } = showPage();
+    const sent = () => vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/users/me/skin_tone").map(([, init]) => JSON.parse(String(init?.body)) as unknown);
+    await user.click(await screen.findByRole("radio", { name: "Light" }));
+    await user.click(screen.getByRole("radio", { name: "Medium" }));
+    await user.click(screen.getByRole("radio", { name: "Dark" }));
+    expect(sent()).toEqual([{ skinTone: 1 }]);
+    expect(screen.getByRole("radio", { name: "Dark" })).toBeChecked();
+
+    answers[0]!();
+    await waitFor(() => expect(sent()).toEqual([{ skinTone: 1 }, { skinTone: 5 }]));
+    expect(onSkinToneChanged).not.toHaveBeenCalled();
+    expect(screen.getByRole("radio", { name: "Dark" })).toBeChecked();
+    answers[1]!();
+    await waitFor(() => expect(onSkinToneChanged).toHaveBeenCalledTimes(1));
+  });
+
   it("shows your tone as it was again when it can't be saved", async () => {
     serve({ toned: () => Response.json({ error: "Down for maintenance" }, { status: 503 }) });
     const { user, onFailed, onSkinToneChanged } = showPage();

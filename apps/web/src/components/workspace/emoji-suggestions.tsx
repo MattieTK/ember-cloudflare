@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { SkinTone } from "@ember/protocol";
 import { useSkinTone } from "@/hooks/use-skin-tone";
@@ -16,9 +16,11 @@ function useEmojiIndex(wanted: boolean): EmojiIndex | null {
   useEffect(() => {
     if (!wanted || index) return;
     let current = true;
-    void loadEmoji().then((loaded) => {
-      if (current) setIndex(loaded);
-    });
+    // Without them, no list shows, until the next code tries again.
+    loadEmoji().then(
+      (loaded) => current && setIndex(loaded),
+      () => {},
+    );
     return () => {
       current = false;
     };
@@ -118,14 +120,31 @@ export function EmojiSuggestions({ id, state, typed, anchor }: Props) {
   const list = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
 
-  // Placed after each change to what's typed, since the code moves along the line as it grows.
-  useLayoutEffect(() => {
+  const place = useEffectEvent(() => {
     const rect = anchor();
     const width = list.current?.offsetWidth ?? 0;
     if (!rect) return setPosition(null);
     const left = Math.max(GAP, Math.min(rect.left - GAP, window.innerWidth - width - GAP));
     setPosition(rect.top >= ROOM_ABOVE ? { left, bottom: window.innerHeight - rect.top + GAP } : { left, top: rect.bottom + GAP });
-  }, [typed, state.open]);
+  });
+
+  // Placed after each change to what's typed, since the code moves along the line as it grows.
+  useLayoutEffect(() => place(), [typed, state.open]);
+
+  // And again as what it's for moves, the timeline or the page scrolling, or the window changing size,
+  // but not as the list scrolls to the emoji Enter would pick.
+  useEffect(() => {
+    if (!state.open) return;
+    const moved = (event: Event) => {
+      if (!list.current?.contains(event.target as Node)) place();
+    };
+    window.addEventListener("scroll", moved, { capture: true, passive: true });
+    window.addEventListener("resize", moved);
+    return () => {
+      window.removeEventListener("scroll", moved, { capture: true });
+      window.removeEventListener("resize", moved);
+    };
+  }, [state.open]);
 
   useLayoutEffect(() => {
     document.getElementById(`${id}-${state.active}`)?.scrollIntoView({ block: "nearest" });

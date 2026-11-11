@@ -1,5 +1,5 @@
 import { REACTIONS } from "@ember/protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import rows from "./emoji-data.json";
 import { closedCode, FAVORED, indexOf, loadEmoji, MAX_MATCHES, recentEmoji, rememberEmoji, searchEmoji, typedCode } from "./emoji";
 
@@ -82,6 +82,22 @@ describe("Searching emoji", () => {
 
   it("loads the emoji once", async () => {
     expect(await loadEmoji()).toBe(await loadEmoji());
+  });
+
+  it("tries loading the emoji again when they couldn't be, as when the network's down", async () => {
+    vi.resetModules();
+    let offline = true;
+    vi.doMock("./emoji-data.json", () => {
+      if (offline) throw new TypeError("Failed to fetch dynamically imported module");
+      return { default: rows };
+    });
+    onTestFinished(() => vi.doUnmock("./emoji-data.json"));
+    const { loadEmoji: load, loadedEmoji: loaded } = await import("./emoji");
+    await expect(load()).rejects.toThrow();
+    expect(loaded()).toBeNull();
+
+    offline = false;
+    expect((await load()).byCode.get("tada")?.emoji).toBe("🎉");
   });
 });
 

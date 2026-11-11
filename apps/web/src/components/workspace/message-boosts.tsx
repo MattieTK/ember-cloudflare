@@ -189,8 +189,8 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
   const hint = useId();
   const emojiList = useId();
   const [content, setContent] = useState("");
-  // Where the cursor is in the field, while it has focus, and where to put it once an emoji's put in a
-  // code's place, as it shows, before the next key's typed.
+  // Where the cursor is in the field, while it has focus and nothing's selected, as in the composer, and
+  // where to put it once an emoji's put in a code's place, as it shows, before the next key's typed.
   const [cursor, setCursor] = useState<number | null>(null);
   const [placedCursor, setPlacedCursor] = useState<number | null>(null);
   const left = MAX_BOOST_LENGTH - content.length;
@@ -214,19 +214,25 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
   });
 
   // A code's closing colon, `colon` typed after the text before the cursor, puts its emoji in its place.
-  // One typed before the emoji have loaded does once they have, if the cursor's still after it.
+  // The emoji have to have loaded.
   const closeCode = (colon: ":" | "") => {
     const field = fieldOf(form.current);
     const index = loadedEmoji();
-    if (!index || !field) {
-      if (colon) void loadEmoji().then(() => closeCode(""));
-      return false;
-    }
-    const closed = closedCode(index, field.value.slice(0, field.selectionStart ?? 0) + colon, emoji.skinTone);
+    const at = field && cursorOf(field);
+    if (!index || !field || at === null) return false;
+    const closed = closedCode(index, field.value.slice(0, at) + colon, emoji.skinTone);
     if (!closed) return false;
     rememberEmoji(closed.base);
     replaceBeforeCursor(closed.typed.length - colon.length, closed.emoji);
     return true;
+  };
+
+  // A closing colon the field wrote anyway closes its code once it's written: one that came before the
+  // emoji loaded, once they have, if the cursor's still after it, and one from a keyboard that doesn't
+  // say which key it was, as phones' often don't.
+  const colonWritten = () => {
+    if (loadedEmoji()) closeCode("");
+    else loadEmoji().then(() => closeCode(""), () => {});
   };
 
   useLayoutEffect(() => {
@@ -273,11 +279,15 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
           placeholder={content === "" ? "Emoji or a word" : ""}
           value={content}
           onChange={(event) => {
+            const input = event.nativeEvent as InputEvent;
             setContent(event.currentTarget.value);
-            setCursor(event.currentTarget.selectionStart);
+            setCursor(cursorOf(event.currentTarget));
+            // Typed where the cursor was, not over what was selected.
+            if (cursor !== null && input.inputType === "insertText" && !input.isComposing && input.data?.endsWith(":")) colonWritten();
           }}
-          onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
-          onFocus={(event) => setCursor(event.currentTarget.selectionStart)}
+          onCompositionEnd={(event) => event.data.endsWith(":") && colonWritten()}
+          onSelect={(event) => setCursor(cursorOf(event.currentTarget))}
+          onFocus={(event) => setCursor(cursorOf(event.currentTarget))}
           onBlur={() => setCursor(null)}
           onKeyDown={(event) => {
             const taken = emoji.keyDown(event.nativeEvent) || (event.key === ":" && !event.nativeEvent.isComposing && closeCode(":"));
@@ -317,3 +327,6 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
 
 /** The custom reaction's field, in its form. */
 const fieldOf = (form: HTMLFormElement | null) => form?.querySelector<HTMLInputElement>("input[name=content]") ?? null;
+
+/** Where the cursor is in `field`, or null while text is selected, which a code isn't typed over. */
+const cursorOf = (field: HTMLInputElement) => (field.selectionStart === field.selectionEnd ? field.selectionStart : null);

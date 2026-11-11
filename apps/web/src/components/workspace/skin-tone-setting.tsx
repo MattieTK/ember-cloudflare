@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffectEvent, useRef, useState } from "react";
 import type { SkinTone } from "@ember/protocol";
 import { useMounted } from "@/hooks/use-mounted";
 import { changeSkinTone, isSignedOut } from "@/lib/api";
@@ -7,7 +7,7 @@ import { SKIN_TONES, withSkinTone } from "@/lib/skin-tone";
 // The Skin tone section of your profile: the tone of the people and hands you type by their :codes and
 // add as quick reactions, as Slack's default skin tone is, for your account, so every browser of yours
 // has it. A choice saves at once, and shows as it was again if it isn't saved. Arrowing through the
-// tones saves each, the last one's answer counting. Boxed as the Ember AI section is.
+// tones saves the last of those chosen while one saves. Boxed as the Ember AI section is.
 
 /** The hand each tone shows on, as Slack's skin tone picker shows them. */
 const HAND = "✋";
@@ -22,28 +22,44 @@ interface Props {
 }
 
 export function SkinToneSetting({ skinTone, onChanged, onFailed }: Props) {
-  // The tone chosen while it saves, and how many have been, so only the last one's answer counts.
+  // The tone chosen while it saves. One save runs at a time, so the server takes them in the order
+  // they're chosen, and a tone chosen meanwhile waits for it, only the latest, which is then all that counts.
   const [choosing, setChoosing] = useState<SkinTone | null>(null);
-  const chosen = useRef(0);
+  const saving = useRef(false);
+  const waiting = useRef<SkinTone | null>(null);
   const mounted = useMounted();
   const shown = choosing ?? skinTone;
+  // Read as each answer comes, so it goes to whoever's signed in then.
+  const saved = useEffectEvent(onChanged);
+  const failed = useEffectEvent(onFailed);
 
-  const choose = (tone: SkinTone) => {
-    const choice = ++chosen.current;
-    const last = () => choice === chosen.current;
-    setChoosing(tone);
+  const save = (tone: SkinTone) => {
+    saving.current = true;
+    const next = () => {
+      saving.current = false;
+      const chosen = waiting.current;
+      waiting.current = null;
+      if (chosen !== null) save(chosen);
+      return chosen === null;
+    };
     changeSkinTone(tone).then(
-      (saved) => {
-        if (!last()) return;
-        onChanged(saved);
+      (answer) => {
+        if (!next()) return;
+        saved(answer);
         if (mounted.current) setChoosing(null);
       },
       (error: unknown) => {
-        if (!last() || (!mounted.current && !isSignedOut(error))) return;
+        if (!next() || (!mounted.current && !isSignedOut(error))) return;
         setChoosing(null);
-        onFailed(error);
+        failed(error);
       },
     );
+  };
+
+  const choose = (tone: SkinTone) => {
+    setChoosing(tone);
+    if (saving.current) waiting.current = tone;
+    else save(tone);
   };
 
   return (

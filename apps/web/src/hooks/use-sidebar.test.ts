@@ -576,6 +576,26 @@ describe("Default skin tone", () => {
     socket().receive({ type: "user.updated", user: listed(ada, "administrator") });
     expect(onSessionChanged).toHaveBeenLastCalledWith({ ...ada, administrator: true, skinTone: 2 });
   });
+
+  it("takes a tone heard before the welcome over the welcome's, and the welcome's name and role still", async () => {
+    const onSessionChanged = vi.fn();
+    renderHook(() => useSidebar(ada, onSessionChanged, { people: new Map(), reload: async () => {}, update: () => {} }));
+    await settle();
+    socket().open();
+    socket().receive({ type: "skin_tone.changed", skinTone: 3 });
+    socket().receive({ type: "welcome", you: { ...ada, name: "Ada L.", administrator: true }, account: ember });
+    expect(onSessionChanged).toHaveBeenLastCalledWith({ ...ada, name: "Ada L.", administrator: true, skinTone: 3 });
+  });
+
+  it("takes a role heard before the welcome over the welcome's, and the welcome's tone still", async () => {
+    const onSessionChanged = vi.fn();
+    renderHook(() => useSidebar(ada, onSessionChanged, { people: new Map(), reload: async () => {}, update: () => {} }));
+    await settle();
+    socket().open();
+    socket().receive({ type: "user.updated", user: listed(ada, "administrator") });
+    socket().receive({ type: "welcome", you: { ...ada, skinTone: 5 }, account: ember });
+    expect(onSessionChanged).toHaveBeenLastCalledWith({ ...ada, administrator: true, skinTone: 5 });
+  });
 });
 
 describe("Shared room order", () => {
