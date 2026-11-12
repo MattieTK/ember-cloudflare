@@ -1,6 +1,6 @@
 import type { Boost, Card, DirectoryUser, Message, SkinTone, StoredFile, User } from "@ember/protocol";
 import { bodyFromPlainText } from "@ember/richtext/dom";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -1354,6 +1354,21 @@ describe("Custom reactions", () => {
     fireEvent.scroll(document.body);
     expect(list.style.top).toBe("");
     expect(list.style.bottom).toBe(`${window.innerHeight - 400 + 6}px`);
+  });
+
+  it("keeps the emoji list by its field as messages above change, with nothing scrolling", async () => {
+    const { user, article } = show(message());
+    article.parentElement!.setAttribute("role", "log");
+    await newBoost(user);
+    const where = vi.spyOn(customField().closest("form")!, "getBoundingClientRect").mockReturnValue(new DOMRect(20, 100, 120, 32));
+    await user.type(customField(), ":fire");
+    const list = (await screen.findByRole("listbox")).parentElement!;
+    expect(list.style.top).toBe("138px");
+
+    // A message above grows, as when someone reacts to it, moving the field down.
+    where.mockReturnValue(new DOMRect(20, 180, 120, 32));
+    article.parentElement!.prepend(document.createElement("article"));
+    await waitFor(() => expect(list.style.top).toBe("218px"));
   });
 
   it("shuts the emoji list on Escape, keeping the form, which a second Escape cancels", async () => {

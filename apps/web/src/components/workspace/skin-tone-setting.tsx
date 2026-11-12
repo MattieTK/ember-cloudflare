@@ -24,6 +24,8 @@ interface Props {
 export function SkinToneSetting({ skinTone, onChanged, onFailed }: Props) {
   // The tone chosen while it saves. One save runs at a time, so the server takes them in the order
   // they're chosen, and a tone chosen meanwhile waits for it, only the latest, which is then all that counts.
+  // Once the section's gone, nothing waits and no answer's given to the app: someone else signing in, in
+  // another tab, closes it, and the session is theirs then. The Workspace tells the tab of a tone saved.
   const [choosing, setChoosing] = useState<SkinTone | null>(null);
   const saving = useRef(false);
   const waiting = useRef<SkinTone | null>(null);
@@ -37,16 +39,16 @@ export function SkinToneSetting({ skinTone, onChanged, onFailed }: Props) {
     saving.current = true;
     const next = () => {
       saving.current = false;
-      const chosen = waiting.current;
+      const chosen = mounted.current ? waiting.current : null;
       waiting.current = null;
       if (chosen !== null) save(chosen);
       return chosen === null;
     };
     changeSkinTone(tone).then(
       (answer) => {
-        if (!next()) return;
+        if (!next() || !mounted.current) return;
         saved(answer);
-        if (mounted.current) setChoosing(null);
+        setChoosing(null);
       },
       (error: unknown) => {
         if (!next() || (!mounted.current && !isSignedOut(error))) return;

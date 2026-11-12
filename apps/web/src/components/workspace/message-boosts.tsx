@@ -301,7 +301,15 @@ function CustomReaction({ me, fieldRef, onAdd, onCancel }: { me: Me; fieldRef?: 
       <span id={hint} hidden>
         Up to 16 characters. Type a colon and a word to find emoji.
       </span>
-      {typed !== null && <EmojiSuggestions id={emojiList} state={emoji} typed={typed} anchor={() => form.current?.getBoundingClientRect() ?? null} />}
+      {typed !== null && (
+        <EmojiSuggestions
+          id={emojiList}
+          state={emoji}
+          typed={typed}
+          anchor={() => form.current?.getBoundingClientRect() ?? null}
+          within={() => form.current?.closest('[role="log"]') ?? null}
+        />
+      )}
       {left <= 5 && (
         <span className={cn("shrink-0 text-[11px] leading-none whitespace-nowrap text-muted-foreground tabular-nums", left === 0 && "text-negative")}>{left} left</span>
       )}

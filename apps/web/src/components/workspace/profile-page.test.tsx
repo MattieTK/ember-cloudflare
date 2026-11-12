@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -640,6 +640,21 @@ describe("Skin tone on your profile", () => {
     expect(screen.getByRole("radio", { name: "Dark" })).toBeChecked();
     answers[1]!();
     await waitFor(() => expect(onSkinToneChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("sends no tone chosen meanwhile once the profile's gone, as when someone else signs in in another tab", async () => {
+    const answers: Array<() => void> = [];
+    serve({ toned: () => new Promise<Response>((resolve) => answers.push(() => resolve(Response.json({ skinTone: 1 })))) });
+    const { user, onSkinToneChanged } = showPage();
+    const sent = () => vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/users/me/skin_tone").length;
+    await user.click(await screen.findByRole("radio", { name: "Light" }));
+    await user.click(screen.getByRole("radio", { name: "Dark" }));
+
+    cleanup();
+    answers[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent()).toBe(1);
+    expect(onSkinToneChanged).not.toHaveBeenCalled();
   });
 
   it("shows your tone as it was again when it can't be saved", async () => {

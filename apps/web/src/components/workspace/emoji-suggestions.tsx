@@ -109,6 +109,8 @@ interface Props {
   typed: string;
   /** Where the code is on the page, which the list opens above, or below where there's no room above. */
   anchor: () => DOMRect | null;
+  /** The timeline the code's in, if it's in one, whose messages can move it as they change. */
+  within?: () => Element | null;
 }
 
 /**
@@ -116,7 +118,7 @@ interface Props {
  * emoji with its code, the one Enter would pick highlighted. Pressing on one picks it without taking
  * focus from the text.
  */
-export function EmojiSuggestions({ id, state, typed, anchor }: Props) {
+export function EmojiSuggestions({ id, state, typed, anchor, within }: Props) {
   const list = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
 
@@ -131,18 +133,22 @@ export function EmojiSuggestions({ id, state, typed, anchor }: Props) {
   // Placed after each change to what's typed, since the code moves along the line as it grows.
   useLayoutEffect(() => place(), [typed, state.open]);
 
-  // And again as what it's for moves, the timeline or the page scrolling, or the window changing size,
-  // but not as the list scrolls to the emoji Enter would pick.
+  // And again as what it's for moves, as the message actions bar is: the timeline or the page scrolling,
+  // but not the list, as it scrolls to the emoji Enter would pick, the window changing size, or what's
+  // shown of it, as a phone's keyboard opens, and messages above changing without anything scrolling.
   useEffect(() => {
     if (!state.open) return;
-    const moved = (event: Event) => {
-      if (!list.current?.contains(event.target as Node)) place();
-    };
-    window.addEventListener("scroll", moved, { capture: true, passive: true });
-    window.addEventListener("resize", moved);
+    const events = new AbortController();
+    const options = { signal: events.signal };
+    document.addEventListener("scroll", (event) => list.current?.contains(event.target as Node) || place(), { ...options, capture: true, passive: true });
+    window.addEventListener("resize", () => place(), options);
+    window.visualViewport?.addEventListener("resize", () => place(), options);
+    const changed = new MutationObserver(() => place());
+    const timeline = within?.();
+    if (timeline) changed.observe(timeline, { childList: true, characterData: true, subtree: true });
     return () => {
-      window.removeEventListener("scroll", moved, { capture: true });
-      window.removeEventListener("resize", moved);
+      events.abort();
+      changed.disconnect();
     };
   }, [state.open]);
 

@@ -430,7 +430,14 @@ export default function RichTextEditor({
     <>
       <div ref={host} className="contents" />
       {typed !== null && (
-        <EmojiSuggestions id={emojiList} state={emoji} typed={typed} anchor={() => textBeforeCursorRect(typed.length + 1)} />
+        <EmojiSuggestions
+          id={emojiList}
+          state={emoji}
+          typed={typed}
+          anchor={() => textBeforeCursorRect(typed.length + 1)}
+          // A message's editor is in the timeline, and the composer below it.
+          within={() => host.current?.closest('[role="log"]') ?? null}
+        />
       )}
     </>
   );
