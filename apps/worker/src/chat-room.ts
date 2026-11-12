@@ -47,14 +47,14 @@ import { openDb, type Db } from "./db";
 import type { Env } from "./env";
 import { attachedFile, Blobs, objectKey, previewKey, type Identified, type RoomBlob, type UploadedPart } from "./files/blobs";
 import type { ImageSize } from "./files/images";
-import { storeArriving, type ArrivingFile, type StreamedFile } from "./files/streamed";
+import { storeArriving, withPreview, type ArrivingFile, type StreamedFile } from "./files/streamed";
 import { NO_STORAGE, type Uploader } from "./files/uploads";
 import { Huddle, HUDDLE_CHECK_MS, HUDDLE_TAG } from "./huddles/room";
 import { base36, sortableId } from "./ids";
 import { sendPushes } from "./push/delivery";
 import { urlOf } from "./request-url";
 import { addressTag, EVERYONE, REVOCATIONS_KEPT_MS, Revocations, sessionTag, type Revocation } from "./revocations";
-import { RoomLog } from "./room-log";
+import { RoomLog, type RoomEvent } from "./room-log";
 import { searchIndex } from "./search-index";
 import { CLOSE_REASONS, closedAtOnce, closeTooLarge, isTooLarge, MAX_ROOM_FRAME_SIZE, RESERVED_CLOSE_CODES } from "./sockets";
 import { MessageStore, type Deletion, type InThread, type PageCursor, type PostedFile, type StoredBody } from "./store";
@@ -242,6 +242,13 @@ export class ChatRoom extends DurableObject<Env> {
    * isn't logged.
    */
   private readonly readers = new Set<UserId>();
+  /**
+   * Who was viewing the room as each of its new messages in the room came, by the message's id, until its
+   * event goes to the Workspace. Someone who saw a message come in has seen it, though they may have left
+   * the room by the time the Workspace hears of it. Kept in memory only: a message the object restarted
+   * since is judged by who's viewing as it's sent, as before.
+   */
+  private readonly seenBy = new Map<string, UserId[]>();
   /** The room's huddle, whose sockets it keeps beside the room's own. */
   private readonly huddle: Huddle;
 
@@ -508,6 +515,17 @@ export class ChatRoom extends DurableObject<Env> {
       const store = this.storeFor(roomId);
       const [page, total] = await Promise.all([store.pageAt(cursor, HISTORY_PAGE_SIZE), store.count()]);
       return page && { ...page, total };
+    });
+  }
+
+  /**
+   * The thread of the message `parentId` names, for a bot reading the room: the message and its newest
+   * replies, oldest first, or null when the room has no such message or it's a reply, which has no thread.
+   */
+  async botThread(roomId: RoomId, parentId: string): Promise<Message[] | null> {
+    return this.serially(async () => {
+      const { parent, messages } = await this.storeFor(roomId).thread(parentId, HISTORY_PAGE_SIZE);
+      return parent && [parent, ...messages];
     });
   }
 
@@ -897,6 +915,7 @@ export class ChatRoom extends DurableObject<Env> {
     // Before the batch, which on D1 may save the message even when it fails.
     if (!inThread || inThread.alsoSend) this.readers.clear();
     const { message, seq, parent } = await store.create(sortableId(), clientMessageId, user, body, now, kind, posted, inThread);
+    if (!inThread || inThread.alsoSend) this.seenBy.set(message.id, viewersOf(this.ctx));
     this.broadcast({ type: "message.created", message, seq });
     if (parent) this.broadcast({ type: "message.updated", ...parent });
     const couriers = this.couriersFor(store.roomId);
@@ -931,7 +950,7 @@ export class ChatRoom extends DurableObject<Env> {
   /** `blob`, which R2 has all of now, as it came to in `file`, as the message it's posted as keeps it, at `now`. */
   private streamed(roomId: RoomId, blob: RoomBlob, file: StreamedFile, now: string): PostedFile {
     const blobs = this.blobsFor(roomId);
-    return { file: attachedFile({ ...blob, byteSize: file.byteSize }, file.identified), finished: (messageId) => blobs.streamed(blob.id, messageId, now, file) };
+    return { file: attachedFile({ ...blob, byteSize: file.byteSize, preview: file.preview ?? null }, file.identified), finished: (messageId) => blobs.streamed(blob.id, messageId, now, file) };
   }
 
   /**
@@ -990,6 +1009,10 @@ export class ChatRoom extends DurableObject<Env> {
 
   /** Tells everyone in the room what deleting messages did: the deletions, then the messages it changed. */
   private broadcastDeletion({ deletedIds, changed, seq }: Deletion): void {
+    // A deleted message's event no longer names it, nor does that of one kept for its thread's replies, so
+    // their viewers are dropped here rather than when the event goes.
+    for (const messageId of deletedIds) this.seenBy.delete(messageId);
+    for (const { message } of changed) if (message.deleted) this.seenBy.delete(message.id);
     deletedIds.forEach((messageId, index) => this.broadcast({ type: "message.deleted", messageId, seq: seq + index }));
     for (const { message, seq } of changed) this.broadcast({ type: "message.updated", message, seq });
   }
@@ -1115,19 +1138,26 @@ export class ChatRoom extends DurableObject<Env> {
     const logged = await log.undelivered(ENTRIES_PER_CALL);
     if (logged.length === 0) return 0;
     const now = Date.now();
+    const viewers = viewersOf(this.ctx, now);
     const threads = new Map<string, UserId[]>();
     const viewingThread = (parentId: string) => {
       if (!threads.has(parentId)) threads.set(parentId, viewersOf(this.ctx, now, parentId));
       return threads.get(parentId)!;
     };
-    const events = logged.map((event) => (event.threadOnly && event.message?.parentId !== undefined ? { ...event, viewerIds: viewingThread(event.message.parentId) } : event));
-    const { pushes, webhooks, asks } = await workspace(this.env).applyRoomEvents(roomId, events, viewersOf(this.ctx, now));
+    // A message in the room goes with everyone who was viewing it as it came, as well as those viewing it now.
+    const seeing = (event: RoomEvent): RoomEvent => {
+      const seen = event.message && this.seenBy.get(event.message.id);
+      return seen ? { ...event, viewerIds: [...new Set([...seen, ...viewers])] } : event;
+    };
+    const events = logged.map((event) => (event.threadOnly && event.message?.parentId !== undefined ? { ...event, viewerIds: viewingThread(event.message.parentId) } : seeing(event)));
+    const { pushes, webhooks, asks } = await workspace(this.env).applyRoomEvents(roomId, events, viewers);
     // The Workspace answers a message's pushes, webhooks and question for @ember once, so they're sent
     // whatever happens next, and the log's next call doesn't wait on push services, bots or models.
     if (pushes.length > 0) this.ctx.waitUntil(this.push(pushes));
     for (const webhook of webhooks) this.ctx.waitUntil(this.deliver(roomId, webhook));
     for (const question of asks) this.ctx.waitUntil(this.answer(roomId, question));
     await log.delivered(events.at(-1)!.seq);
+    for (const { message } of events) if (message) this.seenBy.delete(message.id);
     return events.length;
   }
 
@@ -1171,7 +1201,7 @@ export class ChatRoom extends DurableObject<Env> {
     const found = await workspace(this.env)
       .botWebhook(roomId, webhook.bot.id)
       .catch(async (error: unknown) => {
-        if ("kept" in reply) await this.env.FILES?.delete(objectKey(reply.kept.key));
+        if ("kept" in reply) await this.env.FILES?.delete([objectKey(reply.kept.key), previewKey(reply.kept.key)]);
         throw error;
       });
     const access = found?.url === webhook.url ? found : null;
@@ -1213,7 +1243,7 @@ export class ChatRoom extends DurableObject<Env> {
     });
     await this.wakeAt(roomId, startedAt + UNFINISHED_UPLOAD_KEPT_MS);
     const stored = await storeArriving(files, objectKey(key), file);
-    return stored && { key, file: stored };
+    return stored && { key, file: await withPreview(this.env, files, key, file.filename, stored) };
   }
 
   /**
@@ -1234,7 +1264,7 @@ export class ChatRoom extends DurableObject<Env> {
       await this.postFile(store, access.bot, blob, this.streamed(roomId, blob, file, now), now, { kind: "reply", inThread });
       return null;
     });
-    if (refused) await this.env.FILES?.delete(objectKey(key));
+    if (refused) await this.env.FILES?.delete([objectKey(key), previewKey(key)]);
     return refused;
   }
 
@@ -1312,9 +1342,10 @@ export class ChatRoom extends DurableObject<Env> {
 
   /**
    * Posts what `bot`, @ember or an agent, `said` to `message`, its answer in Markdown, as its reply: in
-   * `message`'s thread when it's in one, only there, with the pictures it shows in a card under it, the
-   * pages it came from after it, and a preview of its first web link below it, as the composer adds one,
-   * the pictures and the link only at addresses people wrote or of the pages it came from, and the link
+   * `message`'s thread when it's in one, only there, with the pictures it shows in a card under it and
+   * the cards of the Slack payloads it writes after that, the pages it came from after it, and a preview
+   * of its first web link below it, as the composer adds one, the pictures, in its cards too, and the
+   * link only at addresses people wrote or of the pages it came from, and the link
    * on none of Ember's own `addresses` (`answerOf`). Like a bot's reply, it reaches the room as any
    * message does, but goes to no bot, @ember and the agents among them. It's posted only while Ember AI
    * is on and the bot in the room, and `message` still there, so that turning Ember AI off, deleting the

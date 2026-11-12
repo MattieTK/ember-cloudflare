@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import type { BotAnswer, Bots, BotSettings } from "@ember/protocol";
 import type { AgentAnswer, Agents, AgentSettings, AgentTrialAnswer } from "@ember/protocol/agents";
-import { TOP_LEVELS, type AssistantCatalog, type AssistantSettings } from "@ember/protocol/assistant";
+import { THINKING_LEVELS, TOP_LEVELS, type AssistantCatalog, type AssistantSettings } from "@ember/protocol/assistant";
 import { AGENT_TEMPLATE } from "@ember/protocol/prompts";
 import { changeTheWorkspace, fakeTurnstile, isolateRoom, listing, openRoom, signInAs, signInAsAdministrator, TURNSTILE_WIDGET, useOwnAddress, type Passes } from "../../fixtures";
 import { auditScreen, settle } from "./audits";
@@ -74,18 +74,17 @@ test("an administrator's Set up Turnstile, with the widget's check, fits the pho
   await screenIsFine({ denseTargets: [SWITCHES] });
 });
 
-test("an administrator's Huddles card and Set up huddles, with a key refused, fit the phone", async ({ page, screenIsFine }) => {
+test("an administrator's Huddles tab and Set up huddles, with a key refused, fit the phone", async ({ page, screenIsFine }) => {
   await useOwnAddress(page);
-  await page.goto("/account/edit#channel-settings");
+  await page.goto("/account/edit#huddles-settings");
   await signInAsAdministrator(page);
-  const card = page.getByRole("region", { name: "Huddles", exact: true });
-  await card.scrollIntoViewIfNeeded();
-  await expect(card.getByRole("switch", { name: "Huddles" })).toBeInViewport();
+  const card = page.getByRole("region", { name: "Audio and video chat", exact: true });
+  await expect(card.getByRole("switch", { name: "Audio and video chat" })).toBeInViewport();
   await screenIsFine({ denseTargets: [SWITCHES] });
 
-  await card.getByRole("switch", { name: "Huddles" }).tap();
+  await card.getByRole("switch", { name: "Audio and video chat" }).tap();
   const setup = page.getByRole("dialog", { name: "Set up huddles" });
-  await expect(setup.getByRole("list", { name: "Steps to make a Realtime SFU app" })).toBeVisible();
+  await expect(setup.getByRole("list", { name: "Steps to set up huddles" })).toBeVisible();
   await screenIsFine({ denseTargets: [SWITCHES] });
 
   // Keys that can't be an app's are refused on their field, before Cloudflare is asked anything.
@@ -96,7 +95,7 @@ test("an administrator's Huddles card and Set up huddles, with a key refused, fi
   await screenIsFine({ denseTargets: [SWITCHES] });
 });
 
-test("an administrator's Huddles card, naming the app huddles run through, fits the phone", async ({ page, screenIsFine }) => {
+test("an administrator's Huddles tab, naming the app huddles run through, fits the phone", async ({ page, screenIsFine }) => {
   await useOwnAddress(page);
   // The settings as they are once an app's keys are given, without giving the test server any, which every other test shows.
   await page.route("**/api/account", async (route) => {
@@ -104,11 +103,11 @@ test("an administrator's Huddles card, naming the app huddles run through, fits 
     if (!response.ok()) return route.fulfill({ response });
     await route.fulfill({ response, json: { ...(await response.json()), huddles: { appId: "ca11".repeat(8) } } });
   });
-  await page.goto("/account/edit#channel-settings");
+  await page.goto("/account/edit#huddles-settings");
   await signInAsAdministrator(page);
-  const card = page.getByRole("region", { name: "Huddles", exact: true });
+  const card = page.getByRole("region", { name: "Audio and video chat", exact: true });
   await card.getByRole("button", { name: "Change keys" }).scrollIntoViewIfNeeded();
-  await expect(card.getByRole("switch", { name: "Huddles" })).toBeChecked();
+  await expect(card.getByRole("switch", { name: "Audio and video chat" })).toBeChecked();
   await screenIsFine({ denseTargets: [SWITCHES] });
 });
 
@@ -305,6 +304,7 @@ const AGENT: AgentSettings = {
   promptTemplate: `${AGENT_TEMPLATE}\n\nSign off as ${LONG_NAME}.`,
   format: "messages",
   levels: { thinking: "medium", length: "long" },
+  thinkingLevels: [...THINKING_LEVELS],
   avatar: true,
   changedBy: { id: "0mgk3x2a9b4c5d", name: LONG_NAME },
   changedAt: "2026-11-09T12:00:00.000Z",

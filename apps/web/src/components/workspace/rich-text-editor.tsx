@@ -4,6 +4,7 @@ import { MENTION_CONTENT_TYPE, OPENGRAPH_EMBED_CONTENT_TYPE } from "@ember/richt
 import { useEffect, useEffectEvent, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { closedCode, loadedEmoji, loadEmoji, rememberEmoji, typedCode } from "@/lib/emoji";
 import { EmojiSuggestions, useEmojiSuggestions } from "./emoji-suggestions";
+import { registerQuoteLines } from "./quote-lines";
 import "./rich-text-editor.css";
 
 // The editor, Lexxy 0.9.24, set up as Campfire sets it up. This is a chunk of its own, loaded as the
@@ -63,7 +64,7 @@ class CampfireRichTextExtension extends Extension {
   }
 
   get lexicalExtension() {
-    return this.defineExtension({ name: "campfire/rich-text", nodes: [CiteNode] });
+    return this.defineExtension({ name: "campfire/rich-text", nodes: [CiteNode], register: registerQuoteLines });
   }
 }
 

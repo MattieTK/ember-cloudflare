@@ -42,7 +42,15 @@ button again afterwards. If your account already has a bucket named `ember`, the
 pick a new one there for this Ember's files, and choose Create new for the database if it picks one
 another Ember uses. The copy has all of Ember but its `.github` folder, so
 add the Update Ember workflow to it, as [Updating](#updating) says, for it to be offered Ember's
-releases. To deploy from your machine instead, after `pnpm exec wrangler login`:
+releases.
+
+Cloudflare can build the copy before it has finished copying Ember into it. That first build then
+stops at `pnpm run build` with `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND`, `No package.json ... was found`,
+because the commit it built holds only Cloudflare's `wrangler.jsonc`, and that commit isn't in the
+copy's history afterwards. Push any commit to the copy, such as an edit to its README in GitHub's
+editor, and Workers Builds builds and deploys the copy as it is.
+
+To deploy from your machine instead, after `pnpm exec wrangler login`:
 
 ```sh
 pnpm build
@@ -137,7 +145,8 @@ on GitHub, where **Run workflow** opens the pull request now, or, while the copy
 **Add GitHub action to update** opens GitHub's editor with it filled in, as the build log's link does.
 To know, the Worker asks GitHub for the page of Ember's latest release once an administrator has Ember
 open, telling it nothing but the version it is, and keeps the answer for six hours, but asks again
-each time an administrator opens Admin, at most once a minute.
+each time an administrator opens Admin, or presses **Check for updates** on General's Ember card, at
+most once a minute. Under the button, the card says when GitHub last named the newest release.
 
 A new GitHub repository doesn't let workflows open pull requests, so until yours does, the workflow
 opens an issue instead, with a link that opens the pull request for you to merge. To have it open them
@@ -217,9 +226,11 @@ To try a beta:
 A copy that runs a beta is offered the betas after it, then the release, each as a pull request like
 any update's, and from then on releases alone, until it asks for a beta again. A pull request for a
 beta it asked for stays open until a release passes it. Its General says it's a beta, ahead of the
-newest release, and that the next beta, then the release, is available, as Admin's dot does. A beta's
-migrations count as released ones, so a copy goes from beta to beta to release as it does from
-release to release, and reverting a beta's update leaves tables the release before it still works with.
+newest release, and the newest beta until a later one is out, which it says is available, then the
+release, as Admin's dot does. General learned of betas in 0.5 beta 2, so 0.5 beta 1's says nothing of
+the betas after it, though Update Ember and the beta workflow bring them. A beta's migrations count as
+released ones, so a copy goes from beta to beta to release as it does from release to release, and
+reverting a beta's update leaves tables the release before it still works with.
 
 ### The build's token
 
@@ -540,6 +551,17 @@ another. `wrangler dev` keeps files on your machine. Without the binding Ember k
 A file goes up in parts of 10 MiB, since a Worker takes at most 100 MB a request, and R2 puts them
 back together. R2 deletes the parts of an upload nobody finishes after a week.
 
+A picture's message shows its preview, a WebP, JPEG or PNG within 1200×800 that the uploader's browser
+makes and sends before the last part, or the picture itself if every browser shows it and it's at most
+5 MiB. Where neither would show it, as for a bot's picture, a HEIC from a browser that can't read one,
+or a picture a browser couldn't make a preview of in 5 seconds, the Worker has
+[Cloudflare Images](https://developers.cloudflare.com/images/optimization/binding/), bound as `IMAGES`,
+make the preview. There's nothing to set up, and its free plan makes 5,000 a month. Past those, the
+Worker's log says why it made none, and the message shows the picture as a file to download, as it
+does a picture over 20 MB, 100 megapixels or 12,000 pixels a side. An account still on Cloudflare's
+legacy Image Resizing subscription has to move to the Images one first. `wrangler dev` makes previews
+on your machine.
+
 ### Ember AI
 
 An administrator adds @ember, an AI assistant, on the AI assistant tab of community settings. Turning
@@ -608,6 +630,17 @@ gateway's [Guardrails](https://developers.cloudflare.com/ai-gateway/features/gua
 dashboard, to check the questions, with the messages @ember reads, or the answers. When either blocks
 one, @ember's note says which, and that an administrator can change what it blocks there.
 
+@ember can also show cards under its answer, as a chat bot's [Slack-compatible webhook](slack-webhooks.md)
+does, for a status, a set of fields or buttons that open pages: it writes a Slack message's payload as
+JSON in a code block that starts with ```` ```slack ````, and the cards the payload posts show under the
+answer, after the card of its pictures, in place of the block. They show as a webhook's do, without
+what only a Slack app could answer, such as a menu, and without the payload's `text`, as the answer's
+own words are its text. A card's pictures show only at the addresses its Markdown's may, while its
+links and buttons, like its Markdown's links, may go anywhere. A block whose payload doesn't parse, or
+posts no card Ember keeps, stays the code it's written as, as does one in a list or a quote. An answer
+too long for a message keeps as many of its cards as fit, each whole, and as much of its text as fits
+beside them, counting the cards' text.
+
 Two dials say how much @ember does for each question. Thinking, Off, Low, Medium or High, is how much
 its model thinks before it answers, up to about 4,000, 16,000 or 32,000 tokens, asked for as each API
 takes it: a Workers AI or OpenAI model's reasoning effort, or Anthropic's adaptive thinking, at its
@@ -617,10 +650,22 @@ limit allows, with room for code and tables. The Limits on @ember's page set the
 anyone's questions, the top of each until an administrator lowers them, and each person picks their
 own levels under Ember AI on their profile, up to those, starting at Low thinking and a Medium answer.
 An agent's levels are its own, set on its page.
-A model that refuses a thinking level is asked again without one. @ember waits for its model as long
-as the levels may take, 2 minutes at the least and about 13 at High and Long. An answer its token limit
-cuts short ends with an ellipsis, and when the model thinks for all it may before writing anything,
-@ember says so and suggests less thinking.
+
+Which thinking levels a model takes is something only asking it says: Cloudflare's catalog can list a
+reasoning effort for a model whose provider refuses it, as it did Low and High for xAI's Grok 4.20
+Reasoning, which xAI refuses at every level. So when an administrator picks a model, in Set up Ember
+AI, Add a model or an agent's page, the Worker also asks it the test question once at each level, all
+at once, and keeps the levels it answered at. A level it doesn't take costs nothing, as the provider
+refuses it before the model writes anything. The Thinking dial then offers only those, on a person's
+profile for their model and on an agent's page, and says which the model can't be set to. A level
+chosen before that the model doesn't take asks it for the nearest one it does, below first, so Off
+asks a model that can't turn thinking off for Low. A model that takes no level, as Grok 4.20 Reasoning
+does, decides how much it thinks, and Thinking still sets how much it may. A model picked before Ember
+asked at each level, or one whose provider refuses a level it took then, is asked again without one.
+
+@ember waits for its model as long as the levels may take, 2 minutes at the least and about 13 at High
+and Long. An answer its token limit cuts short ends with an ellipsis, and when the model thinks for all
+it may before writing anything, @ember says so and suggests less thinking.
 
 Search the web, on @ember's page, lets @ember search the web and read pages with its model's own
 tools, which AI Gateway passes on and the model's provider runs
@@ -681,10 +726,11 @@ answers stay.
 
 An agent answers as @ember does: when it's mentioned in a room or a thread it's in, or written to in a
 DM, it reads the same conversation and sends it through AI Gateway to its own model, whose provider
-reads it, with its own instructions. Like @ember, it never answers a bot, so agents and @ember don't
-answer each other. AI Gateway's logs and spend limits tell the agents apart by `agent_id`, as
-[Ember AI](#ember-ai) says. Turning Ember AI off takes every agent out of its rooms, as it does
-@ember, and keeps them, to come back as they were when it's on again, in the open rooms there are then.
+reads it, with its own instructions, and its answer shows the pictures, cards and preview @ember's
+would. Like @ember, it never answers a bot, so agents and @ember don't answer each other. AI Gateway's
+logs and spend limits tell the agents apart by `agent_id`, as [Ember AI](#ember-ai) says. Turning Ember
+AI off takes every agent out of its rooms, as it does @ember, and keeps them, to come back as they were
+when it's on again, in the open rooms there are then.
 
 The Agent badge follows an agent's name wherever it shows, so nobody takes it for a person: on its
 messages, deleted agents' too, on a DM with it alone in the sidebar and the room's header, in the
@@ -695,11 +741,12 @@ the model, which AI Gateway sends what it's asked to), and who set it up, but no
 #### What Ember adds around the instructions
 
 Ember writes the rest of @ember's and each agent's system prompt around their instructions: who they
-are, where they're asked, how the chat shows Markdown and pictures, what they may do on the web, and
-the date. Under What Ember adds around them, on @ember's page and each agent's, a box headed Modify
-with caution keeps it as Ember writes it until Modify is pressed, as a change there can leave a model
-unsure who it is, where it's asked or what the chat can show. Modify opens the template Ember fills in
-each time it's asked, up to 10,000 characters, with what each placeholder stands for:
+are, where they're asked, how the chat shows Markdown and pictures, how to show a card, what they may
+do on the web, and the date. Under What Ember adds around them, on @ember's page and each agent's, a
+box headed Modify with caution keeps it as Ember writes it until Modify is pressed, as a change there
+can leave a model unsure who it is, where it's asked or what the chat can show. Modify opens the
+template Ember fills in each time it's asked, up to 10,000 characters, with what each placeholder
+stands for:
 
 | Placeholder | What Ember fills in |
 | --- | --- |
@@ -708,6 +755,7 @@ each time it's asked, up to 10,000 characters, with what each placeholder stands
 | `{{where}}` | The room, thread or direct message it's asked in |
 | `{{asker}}` | The name of whoever asked |
 | `{{words}}` | About how many words it may answer in, from Answer length |
+| `{{cards}}` | How it can show a card under its answer, with a Slack payload |
 | `{{web}}` | What it may do on the web, or who could let it |
 | `{{today}}` | Today's date, in UTC |
 | `{{instructions}}` | The instructions, which it needs once |
@@ -720,8 +768,10 @@ instructions added, `{{instructions}}` on a line of its own goes with its line, 
 leaves the rest of the line as it's written. An agent's template saves with Save changes, and
 @ember's with Save beside it, or Save instructions. Try it asks an agent with the template as the page
 has it, saved or not. Use Ember's own puts Ember's back, which Ember keeps as its own, so that it
-changes as Ember's does in later releases, where a modified template stays as it was saved. While it's
-modified, What Ember adds around them is marked Modified.
+changes as Ember's does in later releases, where a modified template stays as it was saved. So a
+template modified before `{{cards}}` came along doesn't tell its model how to show a card until
+`{{cards}}` is added to it, though a card the model writes anyway still shows. While it's modified,
+What Ember adds around them is marked Modified.
 
 ### Huddles
 
@@ -737,18 +787,22 @@ ends when the last of them leaves. A tab is in one huddle at a time, and joining
 another tab or device leaves it in the first. DMs have no huddles yet, and there's no video or screen
 sharing yet.
 
-An administrator turns huddles on with the Huddles card, under Rooms and permissions in community
-settings. Huddles run through Cloudflare's [Realtime SFU](https://developers.cloudflare.com/realtime/sfu/),
+An administrator turns huddles on under Huddles in community settings, with the switch on its card.
+Huddles run through Cloudflare's [Realtime SFU](https://developers.cloudflare.com/realtime/sfu/),
 which carries what each person in a huddle says to the others, by an SFU app in your Cloudflare
-account. Turning the card on opens Set up huddles, which takes the app's App ID and App Secret:
-create the app under Realtime, Serverless SFU in the Cloudflare dashboard, which the dialog links to,
-in the account Ember is deployed to when the deploy gave it. Before it keeps the keys, the Worker asks
-the SFU to start a session with them (`POST /apps/{appId}/sessions/new`), which nobody connects to, so
-an app Cloudflare doesn't know, or a secret that isn't the app's, is refused on its field. Cloudflare
-can take a minute to know a new app everywhere. Change keys takes another app's, and turning the card
-off forgets them, which ends any huddle going on within half a minute. The secret stays in the Worker,
-which alone asks the SFU's API: a browser sends its microphone to the SFU, and hears the others from
-it, over WebRTC, and finds its way there with Cloudflare's STUN server (`stun.cloudflare.com:3478`).
+account. Turning the card on opens Set up huddles, which has two steps: create the app under
+Realtime, Serverless SFU in the Cloudflare dashboard, which the dialog's button opens, in the
+account Ember is deployed to when the deploy gave it, then copy the app's App ID and App Secret into
+the dialog, where the secret shows as dots. Before it keeps the keys, the Worker asks the SFU to
+start a session with them (`POST /apps/{appId}/sessions/new`), which nobody connects to, so an app
+Cloudflare doesn't know, or a secret that isn't the app's, is refused on its field. Cloudflare can
+take a minute to know a new app everywhere. Change keys takes another app's, and turning the card
+off forgets them, which ends any huddle going on within half a minute. Setting Ember up asks about
+huddles too: once it has made the administrator's account, Set up Ember asks whether to turn them
+on, and takes the same two steps before it opens Ember, or Not now, which leaves them to community
+settings. The secret stays in the Worker, which alone asks the SFU's API: a browser sends its
+microphone to the SFU, and hears the others from it, over WebRTC, and finds its way there with
+Cloudflare's STUN server (`stun.cloudflare.com:3478`).
 What the SFU charges is in [What it costs](#what-it-costs).
 
 ### A preview from GitHub Actions
@@ -843,7 +897,8 @@ What a self-hoster should know, beyond keeping the setup password and link to th
   password reset, or a new password saved in another session ends it. Its id travels in the
   address's fragment, which no log sees.
 - A file's address is signed and never expires: whoever has it can open the file until its message
-  is deleted, as with Active Storage's links.
+  is deleted, as with Active Storage's links. A bot is given the addresses of the files in its rooms,
+  with the messages its webhook is sent and those the bot API answers, so it can read them.
 - A bot's webhook payload carries the bot's key, so point bots only at servers you trust. Webhooks
   go only to https, or to http on localhost, so nobody on the way reads the key; a bot saved with an
   http URL elsewhere before gets no deliveries until its URL is changed, and the Worker's log says
@@ -919,7 +974,9 @@ pages had them in October 2026:
   are monthly and far larger, such as 50 million rows written a month, and use past them is billed at
   Cloudflare's rates.
 - **Files** go to R2, which stores 10 GB a month free, then charges $0.015 per GB a month, and never
-  charges for downloads.
+  charges for downloads. Cloudflare Images makes the previews of 5,000 pictures a month free, where
+  uploaders' browsers sent none, and on its Paid plan charges $0.50 per 1,000 after that, as
+  [Files](#files) says.
 - **Email**, if Ember sends it: Resend's free plan sends 3,000 emails a month, at most 100 a day, and
   Cloudflare Email Service includes 3,000 a month on Workers Paid, as [Sending email](#sending-email)
   says.
@@ -928,6 +985,8 @@ pages had them in October 2026:
   AI Gateway's credits, at each provider's own per-token prices, plus a 5% fee on the credits bought.
   Thinking counts as output, as the answer does, so the [dials](#ember-ai) bound what one answer
   costs: at most 3,000 tokens out at Off and Short, 6,000 at Low and Medium, and 38,000 at High and Long.
+  Picking a model asks it a test question, then again at each Thinking level, each at most 2,000
+  tokens out.
   Each person's questions cost what the model they pick does, so add to the Models list only the
   models you're happy to pay for, and each [agent's](#ai-agents) what its own model does at its own
   dials, whose most its page says. While Search the web is on, an answer can also search up to 5 times,
