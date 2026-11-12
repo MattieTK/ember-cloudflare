@@ -12,10 +12,11 @@ import { useHuddle } from "@/hooks/use-huddle";
 import { useMounted } from "@/hooks/use-mounted";
 import { useReleaseCheck } from "@/hooks/use-release-check";
 import { useSidebar } from "@/hooks/use-sidebar";
+import { SkinToneContext, withSkinToneOf } from "@/hooks/use-skin-tone";
 import { ApiError, dismissInvitation, isSignedOut, startDirect } from "@/lib/api";
 import { hearHuddleEnd, leaveHuddle, muteHuddle } from "@/lib/huddle-store";
 import { whenIdle } from "@/lib/idle";
-import { opensFind, togglesHuddle, togglesMute } from "@/lib/keyboard";
+import { opensFind, opensShortcuts, togglesHuddle, togglesMute } from "@/lib/keyboard";
 import { lastRoomVisited } from "@/lib/last-room";
 import { takeMemberfulFlash } from "@/lib/memberful";
 import { loadPage } from "@/lib/page";
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { afterNavigating, messagePath, navigate, pageMark, roomPath, routeOf, useHash, useRoute, type Route } from "@/hooks/use-route";
 import { HuddlesContext, NO_HUDDLES, type Huddles } from "./huddle-button";
 import { MovedNotice } from "./moved-notice";
+import { KeyboardShortcutsDialog } from "./keyboard-shortcuts-dialog";
 import { NewDirectDialog } from "./new-direct-dialog";
 import { DrawerOpen, PageHeader } from "./page-header";
 import { Rail, type RailPage } from "./rail";
@@ -315,8 +317,8 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   const listed = rooms !== null;
   useEffect(() => (listed ? whenIdle(() => void loadRarePages().catch(() => {})) : undefined), [listed]);
   // And for an administrator, whether a newer release of Ember is out, or for a beta the beta after it,
-  // which the rail's Admin marks, asked afresh each time Admin opens.
-  const release = useReleaseCheck(administrator, listed, settings !== null);
+  // which the rail's Admin marks, asked afresh each time Admin opens, and by General's Check for updates.
+  const { check: release, checkAgain: checkForUpdates } = useReleaseCheck(administrator, listed, settings !== null);
   const newRelease = (release && updateOf(release)?.release) ?? null;
 
   // On a phone, the drawer closes as New direct message opens.
@@ -339,6 +341,8 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   const huddle = useHuddle();
   const huddlesOn = useAccount().huddles;
   const [huddlePreview, setHuddlePreview] = useState<RoomId | null>(null);
+  // Whether the keyboard shortcuts dialog is open.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const closeHuddlePreview = useCallback(() => setHuddlePreview(null), []);
   const liveHuddles = list?.huddles ?? NO_HUDDLES;
   const huddles = useMemo<Huddles>(() => ({ live: liveHuddles, preview: setHuddlePreview }), [liveHuddles]);
@@ -477,6 +481,13 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   }, [route, goingOn]);
 
   const room = route.page !== "room" || goingOn ? null : (goneRoom ?? rooms?.find((r) => r.id === route.roomId) ?? null);
+  // When the room shown was marked unread as of as it opened, for its timeline's New line, kept while it
+  // stays open, though opening it reads it. Coming back to it with nothing new draws none.
+  const [opened, setOpened] = useState<{ roomId: RoomId | null; newSince: string | null }>({ roomId: null, newSince: null });
+  if (opened.roomId !== (room?.id ?? null)) {
+    const listed = room && rooms?.find((r) => r.id === room.id);
+    setOpened({ roomId: room?.id ?? null, newSince: (listed?.unread && listed.unreadSince) || null });
+  }
   const direct = route.page !== "direct-settings" || goingOn || !rooms ? null : directIn(goneRoom ? [goneRoom] : rooms, route.roomId);
   // The workspace socket's news that a room is gone takes it out of the list, and the room or the DM's
   // settings shown stay. Declared as a function, so that `useSidebar` above can take it.
@@ -565,10 +576,19 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
     if (!huddlesOn || !room || room.kind === "direct" || goneRoom) return;
     pressed(() => setHuddlePreview(room.id));
   });
+  // Cmd+/ or Ctrl+/ opens the keyboard shortcuts: from the composer too, which has no
+  // key of its own there, but not over another dialog, a native <dialog> like Notification setup included.
+  const shortcutsPressed = useEffectEvent((event: KeyboardEvent) => {
+    if (event.defaultPrevented || !opensShortcuts(event)) return;
+    if (event.target instanceof Element && event.target.closest("dialog, [role=dialog]")) return;
+    event.preventDefault();
+    setShortcutsOpen(true);
+  });
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       findPressed(event);
       huddleKeyPressed(event);
+      shortcutsPressed(event);
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
@@ -649,6 +669,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
             onSharedOrderSaved={reorderedRooms}
             onSessionChanged={onSessionChanged}
             release={release}
+            onCheckForUpdates={checkForUpdates}
           />
         ));
       case "custom-styles":
@@ -670,7 +691,16 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
           <AgentSettingsPage key={route.agentId} agentId={route.agentId} me={me} rooms={rooms} onMissing={showNotFound} onFailed={failed} />
         ));
       case "profile":
-        return rarePage(({ ProfilePage }) => <ProfilePage me={me} rooms={rooms} askForRoom={askForRoom} onSignOut={onSignOut} onFailed={failed} />);
+        return rarePage(({ ProfilePage }) => (
+          <ProfilePage
+            me={me}
+            rooms={rooms}
+            askForRoom={askForRoom}
+            onSkinToneChanged={(skinTone) => onSessionChanged(withSkinToneOf(me, skinTone))}
+            onSignOut={onSignOut}
+            onFailed={failed}
+          />
+        ));
       case "push-subscriptions":
         return rarePage(({ PushSubscriptionsPage }) => <PushSubscriptionsPage back={back} onFailed={failed} />);
       case "search":
@@ -710,6 +740,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
               onStarred={starredRooms}
               // As the list has it, or as it starts once the room has gone from the list.
               involvement={rooms?.find((r) => r.id === room.id)?.involvement ?? startingInvolvement(room)}
+              newSince={opened.roomId === room.id ? opened.newSince : null}
               askForRoom={askForRoom}
               onSessionChanged={onSessionChanged}
               onFailed={failed}
@@ -829,6 +860,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
               onFailed={failed}
             />
           )}
+          <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
           {searchBox && <SearchBox {...searchBox} me={me} rooms={rooms ?? NO_ROOMS} onClose={() => setSearchBox(null)} onFailed={failed} />}
           {previewed && (
             <RarePage
@@ -853,7 +885,9 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
       <DirectoryLoaded value={directory.loaded}>
         <SettingsLayout value={settings}>
           <OpenSearchContext value={openSearch}>
-            <HuddlesContext value={huddles}>{layout}</HuddlesContext>
+            <HuddlesContext value={huddles}>
+              <SkinToneContext value={me.skinTone ?? 0}>{layout}</SkinToneContext>
+            </HuddlesContext>
           </OpenSearchContext>
         </SettingsLayout>
       </DirectoryLoaded>

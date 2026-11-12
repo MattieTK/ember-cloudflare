@@ -12,6 +12,7 @@ import {
   emailDomainOf,
   isHost,
   isRoomIcon,
+  isSkinTone,
   mailboxOf,
   mailboxText,
   parseSearch,
@@ -39,6 +40,7 @@ import {
   type Search,
   type SharedRoom,
   type SidebarRoom,
+  type SkinTone,
   type User,
   type UserId,
   type UserStatus,
@@ -140,6 +142,8 @@ export interface JoinableAccount extends Omit<Account, "logo" | "huddles"> {
   assistantMost: AnswerLevels;
   /** What Ember adds to @ember's own instructions, as administrators write them, or "" for nothing, whether Ember AI is on or not. */
   assistantInstructions: string;
+  /** What Ember adds around them, as administrators changed it, or null for Ember's own, whether Ember AI is on or not. */
+  assistantPromptTemplate: string | null;
   /** The SFU app huddles run through, while an administrator has them on, or else null. */
   huddles: SavedHuddles | null;
   /** Where a deploy puts Ember, as the latest page opened there told it, or null until one has (`EmberAddresses.deployed`). */
@@ -178,8 +182,11 @@ export interface SavedAssistant {
   webToolsAskedAt: string | null;
 }
 
-/** A model people can pick, as the account keeps it: its ID, its name, and the format it took its test question in. */
-export type SavedModel = Pick<AssistantModel, "id" | "name" | "format">;
+/**
+ * A model people can pick, as the account keeps it: its ID, its name, the format it took its test
+ * question in, and the levels of thinking it takes, once Ember has asked it at each.
+ */
+export type SavedModel = Pick<AssistantModel, "id" | "name" | "format" | "thinkingLevels">;
 
 /** The account first run creates. */
 export interface NewAccount {
@@ -238,6 +245,8 @@ export interface StoredSession {
   administrator: boolean;
   /** Whether the person signed in with just a name. */
   guest: boolean;
+  /** The skin tone the person chose for emoji. */
+  skinTone: SkinTone;
   /** When the session was last refreshed, in milliseconds since the epoch. */
   lastActiveAt: number;
 }
@@ -384,22 +393,30 @@ export interface NewStoredBot {
 }
 
 /**
- * What makes a bot an agent, as the agents table keeps it: what it does, its instructions, the model it
- * answers with, what that's called and the format it took its test question in, how much it thinks and
- * how long it answers, and what it may do on the web.
+ * What makes a bot an agent, as the agents table keeps it: what it does, its instructions and what Ember
+ * adds around them, the model it answers with, what that's called, the format it took its test question
+ * in and the levels of thinking it takes, how much it thinks and how long it answers, and what it may do
+ * on the web.
  */
 export interface AgentSetup {
   description: string;
   instructions: string;
+  /** What Ember adds around the instructions, as an administrator changed it, or null for Ember's own. */
+  promptTemplate: string | null;
   model: string;
   modelName: string;
   format: ModelFormat;
+  /** The levels of thinking its model takes, or null for one Ember hasn't asked at each, as for an agent made before Ember did. */
+  thinkingLevels: ThinkingLevel[] | null;
   levels: AnswerLevels;
   webTools: WebTool[];
 }
 
-/** An agent as a question for it finds it: its name, its instructions, its model and that model's format, its levels and what it may do on the web. */
-export interface AnsweringAgent extends Pick<AgentSetup, "instructions" | "model" | "format" | "levels" | "webTools"> {
+/**
+ * An agent as a question for it finds it: its name, its instructions and what Ember adds around them, its
+ * model, that model's format and the levels of thinking it takes, its levels and what it may do on the web.
+ */
+export interface AnsweringAgent extends Pick<AgentSetup, "instructions" | "promptTemplate" | "model" | "format" | "thinkingLevels" | "levels" | "webTools"> {
   name: string;
 }
 
@@ -506,8 +523,8 @@ export interface SavedRoomChange {
 
 /** What applying events from a room's log changed. */
 export interface AppliedEvents {
-  /** Whose unread marks changed, and whether each is now unread. */
-  marks: Map<UserId, boolean>;
+  /** Whose unread marks changed, and when the message each is now marked unread as of came, or null for one now read. */
+  marks: Map<UserId, string | null>;
   /** When messages came in a DM, when the latest did and everyone in the DM; null otherwise. */
   active: { at: string; userIds: UserId[] } | null;
   /** The new messages' pushes, oldest message first, when they were asked for. */
@@ -595,6 +612,7 @@ interface SessionRow {
   name: string;
   administrator: number;
   guest: number;
+  skin_tone: number;
 }
 
 const INSERT_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at)
@@ -856,7 +874,7 @@ const INSERT_TRANSFERRED_SESSION = `INSERT INTO sessions (id, user_id, token_dig
 
 /** The session a token's digest names, if its person is still active. */
 const SESSION = `SELECT sessions.id AS session_id, sessions.last_active_at, users.id AS user_id, users.name,
-    users.role = ${ADMINISTRATOR} AS administrator, users.guest
+    users.role = ${ADMINISTRATOR} AS administrator, users.guest, users.skin_tone
   FROM sessions JOIN users ON users.id = sessions.user_id
   WHERE sessions.token_digest = ? AND users.status = ${ACTIVE}`;
 
@@ -933,7 +951,9 @@ interface AgentRow extends DirectoryRow {
 /** An agent as its page shows it, as `AGENT` reads it. */
 interface AgentSettingsRow extends AgentRow, AvatarColumns {
   instructions: string;
+  prompt_template: string | null;
   format: string;
+  thinking_levels: string | null;
   thinking: string;
   answer_length: string;
   changed_by: UserId;
@@ -951,13 +971,18 @@ const storedAgent = (row: AgentRow, rooms: AgentRoom[]): StoredAgent => ({
   rooms: row.every_open_room === 1 ? null : rooms,
 });
 
-/** How an agent answers, as the agents table keeps it: its instructions, its model's format, its levels and what it may do on the web. */
-type AnsweringColumns = Pick<AgentSettingsRow, "instructions" | "format" | "thinking" | "answer_length" | "web_tools">;
+/**
+ * How an agent answers, as the agents table keeps it: its instructions and what Ember adds around them,
+ * its model's format and the levels of thinking it takes, its levels and what it may do on the web.
+ */
+type AnsweringColumns = Pick<AgentSettingsRow, "instructions" | "prompt_template" | "format" | "thinking_levels" | "thinking" | "answer_length" | "web_tools">;
 
-/** How an agent answers, as `row` keeps it. What can't be a format or a level, as nothing Ember writes is, reads as where @ember's start. */
-const answeringOf = (row: AnsweringColumns): Pick<AgentSetup, "instructions" | "format" | "levels" | "webTools"> => ({
+/** How an agent answers, as `row` keeps it. What can't be a format or a level, as nothing Ember writes is, reads as where @ember's start, and as untested levels of thinking. */
+const answeringOf = (row: AnsweringColumns): Pick<AgentSetup, "instructions" | "promptTemplate" | "format" | "thinkingLevels" | "levels" | "webTools"> => ({
   instructions: row.instructions,
+  promptTemplate: row.prompt_template,
   format: isModelFormat(row.format) ? row.format : "chat",
+  thinkingLevels: row.thinking_levels === null ? null : (thinkingLevelsIn(JSON.parse(row.thinking_levels)) ?? null),
   levels: { thinking: levelIn(THINKING_LEVELS, row.thinking) ?? DEFAULT_LEVELS.thinking, length: levelIn(ANSWER_LENGTHS, row.answer_length) ?? DEFAULT_LEVELS.length },
   webTools: webToolsIn(row.web_tools),
 });
@@ -978,8 +1003,19 @@ function webToolsIn(kept: string | null): WebTool[] {
 }
 
 /** An agent's setup's columns, as `INSERT_AGENT` and `CHANGE_AGENT` take them, in order. */
-const agentColumns = ({ description, instructions, model, modelName, format, levels, webTools }: AgentSetup) =>
-  [description, instructions, model, modelName, format, levels.thinking, levels.length, webTools.length > 0 ? JSON.stringify(webTools) : null] as const;
+const agentColumns = ({ description, instructions, model, modelName, format, levels, webTools, promptTemplate, thinkingLevels }: AgentSetup) =>
+  [
+    description,
+    instructions,
+    model,
+    modelName,
+    format,
+    levels.thinking,
+    levels.length,
+    webTools.length > 0 ? JSON.stringify(webTools) : null,
+    promptTemplate,
+    thinkingLevels && JSON.stringify(thinkingLevels),
+  ] as const;
 
 /** Whether a value is `present?`: not null, false, blank, or empty. */
 function isPresent(value: unknown): boolean {
@@ -1068,8 +1104,9 @@ function huddlesIn(settings: Record<string, unknown> | null): SavedHuddles | nul
 /**
  * How Ember AI asks AI Gateway, which the account's settings keep as `assistant`,
  * `{ account_id, api_token, model, format, models, web_tools, web_tools_asked_at }`, the API token sealed,
- * or null while it's off. Its models are `[{ id, name, format }]`, which Ember AI set up before people
- * could pick has none of: it then has its own model alone, as it does when they leave it out. Without
+ * or null while it's off. Its models are `[{ id, name, format, thinking_levels }]`, which Ember AI set up
+ * before people could pick has none of: it then has its own model alone, as it does when they leave it
+ * out. A model added before Ember asked models at each level of thinking has no `thinking_levels`. Without
  * `web_tools`, as Ember AI was kept before Search the web, @ember does nothing on the web.
  */
 function assistantIn(settings: Record<string, unknown> | null): SavedAssistant | null {
@@ -1094,14 +1131,18 @@ function assistantIn(settings: Record<string, unknown> | null): SavedAssistant |
 function savedModelsIn(kept: unknown): SavedModel[] {
   const models = new Map<string, SavedModel>();
   for (const model of Array.isArray(kept) ? kept : []) {
-    const { id, name, format } = typeof model === "object" && model !== null ? (model as Record<string, unknown>) : {};
+    const { id, name, format, thinking_levels: kept } = typeof model === "object" && model !== null ? (model as Record<string, unknown>) : {};
     if (typeof id !== "string" || modelOf(id) !== id || models.has(id) || !isModelFormat(format)) continue;
-    models.set(id, { id, name: modelNameOf(name) ?? modelName(id), format });
+    const thinkingLevels = thinkingLevelsIn(kept);
+    models.set(id, { id, name: modelNameOf(name) ?? modelName(id), format, ...(thinkingLevels && { thinkingLevels }) });
   }
   return [...models.values()];
 }
 
 const isModelFormat = (format: unknown): format is ModelFormat => (MODEL_FORMATS as readonly unknown[]).includes(format);
+
+/** The levels of thinking `kept` lists, as Ember keeps those a model takes, in order, or undefined when it isn't a list. */
+const thinkingLevelsIn = (kept: unknown): ThinkingLevel[] | undefined => (Array.isArray(kept) ? THINKING_LEVELS.filter((level) => kept.includes(level)) : undefined);
 
 /**
  * The most each of @ember's dials goes to, which the account's settings keep as `assistant_limits`,
@@ -1119,6 +1160,12 @@ function assistantInstructionsIn(settings: Record<string, unknown> | null): stri
   return typeof kept === "string" ? kept : "";
 }
 
+/** What Ember adds around them, which the account's settings keep as `assistant_prompt_template`, or null for Ember's own. */
+function assistantPromptTemplateIn(settings: Record<string, unknown> | null): string | null {
+  const kept = settings?.assistant_prompt_template;
+  return typeof kept === "string" ? kept : null;
+}
+
 /** `kept` as one of a dial's `levels`, or null when it isn't one. */
 const levelIn = <T extends string>(levels: readonly T[], kept: unknown): T | null => ((levels as readonly unknown[]).includes(kept) ? (kept as T) : null);
 
@@ -1130,7 +1177,7 @@ const assistantSetting = (assistant: SavedAssistant | null) =>
       api_token: assistant.sealedApiToken,
       model: assistant.model,
       format: assistant.format,
-      models: assistant.models.map(({ id, name, format }) => ({ id, name, format })),
+      models: assistant.models.map(({ id, name, format, thinkingLevels }) => ({ id, name, format, ...(thinkingLevels && { thinking_levels: thinkingLevels }) })),
       web_tools: assistant.webTools,
       web_tools_asked_at: assistant.webToolsAskedAt,
     },
@@ -1211,6 +1258,7 @@ interface SidebarRow extends HuddleRow {
   icon: SharedRoom["icon"];
   active_at: string;
   unread: number;
+  unread_since: string | null;
   involvement: Involvement;
   shared_position: number | null;
 }
@@ -1255,10 +1303,11 @@ const membersOf = (rows: DirectMemberRow[]): User[] => rows.map(({ id, name }) =
 const roomOf = ({ id, kind, name, icon, active_at }: SidebarRow, members: DirectMemberRow[] = []): Room =>
   kind === "direct" ? { id, kind, members: membersOf(members), activeAt: active_at } : { id, kind, name: name ?? "", icon };
 
-/** A room as someone's sidebar lists it, with whether it's marked unread for them and their level in it. */
+/** A room as someone's sidebar lists it, with whether it's marked unread for them, since when, and their level in it. */
 const sidebarRoom = (row: SidebarRow, members?: DirectMemberRow[]): SidebarRoom => ({
   ...roomOf(row, members),
   unread: row.unread === 1,
+  ...(row.unread_since !== null && { unreadSince: row.unread_since }),
   involvement: row.involvement,
 });
 
@@ -1269,6 +1318,7 @@ const storedSession = (row: SessionRow): StoredSession => ({
   user: { id: row.user_id, name: row.name },
   administrator: row.administrator === 1,
   guest: row.guest === 1,
+  skinTone: isSkinTone(row.skin_tone) ? row.skin_tone : 0,
   lastActiveAt: Date.parse(row.last_active_at),
 });
 
@@ -1283,7 +1333,7 @@ const ACTIVE_AT = `coalesce(rooms.last_message_at, rooms.created_at) AS active_a
  * they were listed.
  */
 export const ROOMS_FOR_USER = `SELECT rooms.id, rooms.kind, rooms.name, rooms.icon, ${ACTIVE_AT}, memberships.unread_at IS NOT NULL AS unread,
-    memberships.involvement, rooms.shared_position, rooms.huddle_started_at, rooms.huddle_user_ids
+    memberships.unread_at AS unread_since, memberships.involvement, rooms.shared_position, rooms.huddle_started_at, rooms.huddle_user_ids
   FROM memberships JOIN rooms ON rooms.id = memberships.room_id
   WHERE memberships.user_id = ? ORDER BY rooms.created_at, rooms.id`;
 
@@ -1393,12 +1443,13 @@ const DIRECT_WITH_KEY = `SELECT rooms.id AS room_id, ${ACTIVE_AT}, users.id, use
 
 /**
  * The people the sidebar suggests ?1 start a DM with, before it leaves out as many as their DMs take:
- * the active people with the oldest accounts who share no DM with them, never them. The people in their
- * DMs come from a subquery, and the index on users' age lets it stop at the last one it needs rather
- * than sorting everyone.
+ * the active people with the oldest accounts who share no DM with them, never them. Unlike Campfire's,
+ * it suggests no bots, nor @ember and the agents, whose rows among the DMs would look like DMs nobody
+ * started. The people in their DMs come from a subquery, and the index on users' age lets it stop at
+ * the last one it needs rather than sorting everyone.
  */
 export const SUGGESTED_FOR_USER = `SELECT id, name FROM users
-  WHERE status = ${ACTIVE} AND id <> ?1 AND id NOT IN (
+  WHERE status = ${ACTIVE} AND role <> ${BOT} AND id <> ?1 AND id NOT IN (
     SELECT members.user_id FROM memberships AS mine JOIN rooms ON rooms.id = mine.room_id
       JOIN memberships AS members ON members.room_id = mine.room_id
     WHERE mine.user_id = ?1 AND rooms.kind = 'direct')
@@ -1701,6 +1752,7 @@ const REMEMBER_DEPLOYED_ADDRESS = rememberSetting("deployed_address");
 const REMEMBER_ASSISTANT = rememberSetting("assistant");
 const REMEMBER_ASSISTANT_LIMITS = rememberSetting("assistant_limits");
 const REMEMBER_ASSISTANT_INSTRUCTIONS = rememberSetting("assistant_instructions");
+const REMEMBER_ASSISTANT_PROMPT_TEMPLATE = rememberSetting("assistant_prompt_template");
 const REMEMBER_OTHER_ADDRESSES = rememberSetting("other_addresses");
 
 /** Navigation icon changes as the merge patch `CHANGE_NAVIGATION_ICONS` takes them: null for a slot's default. */
@@ -1919,7 +1971,7 @@ const KEPT_AGENTS_ROOMS = `SELECT memberships.user_id, rooms.id, rooms.name
 
 /** An active agent as its page shows it, with its avatar and who last changed it. */
 const ACTIVE_AGENT = `SELECT ${AGENT_COLUMNS}, users.avatar_key, users.avatar_variant,
-    agents.instructions, agents.format, agents.thinking, agents.answer_length,
+    agents.instructions, agents.prompt_template, agents.format, agents.thinking_levels, agents.thinking, agents.answer_length,
     agents.updated_by AS changed_by, changers.name AS changed_by_name, agents.updated_at AS changed_at
   FROM agents JOIN users ON users.id = agents.user_id JOIN users AS changers ON changers.id = agents.updated_by
   WHERE agents.user_id = ? AND users.status = ${ACTIVE}`;
@@ -1929,7 +1981,8 @@ const ACTIVE_AGENT = `SELECT ${AGENT_COLUMNS}, users.avatar_key, users.avatar_va
  * posted: its name, its model, and how it answers. Nothing unless it's an active agent in the room, so
  * that turning Ember AI off, deleting the agent or taking it out of the room stops what's on its way.
  */
-const ANSWERING_AGENT = `SELECT users.name, agents.model, agents.instructions, agents.format, agents.thinking, agents.answer_length, agents.web_tools
+const ANSWERING_AGENT = `SELECT users.name, agents.model, agents.instructions, agents.prompt_template, agents.format, agents.thinking_levels, agents.thinking,
+    agents.answer_length, agents.web_tools
   FROM agents JOIN users ON users.id = agents.user_id
   WHERE agents.user_id = ?2 AND users.status = ${ACTIVE} AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = ?1 AND memberships.user_id = ?2)`;
 
@@ -1944,14 +1997,14 @@ const AGENTS_LISTED = `SELECT ${DIRECTORY_COLUMNS} FROM agents JOIN users ON use
 const AGENT_PROFILE = `SELECT agents.description, agents.model, agents.model_name, agents.created_by, makers.name AS created_by_name
   FROM agents JOIN users AS makers ON makers.id = agents.created_by WHERE agents.user_id = ?`;
 
-/** What makes a bot an agent, ?10 being 1 to put it in every open room, made by ?11. */
+/** What makes a bot an agent, ?12 being 1 to put it in every open room, made by ?13. */
 const INSERT_AGENT = `INSERT INTO agents (user_id, description, instructions, model, model_name, format, thinking, answer_length, web_tools,
-    every_open_room, created_by, updated_by, created_at, updated_at)
-  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?12)`;
+    prompt_template, thinking_levels, every_open_room, created_by, updated_by, created_at, updated_at)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?14)`;
 
 /** Changes an agent's setup, and records who changed it, and when. */
 const CHANGE_AGENT = `UPDATE agents SET description = ?2, instructions = ?3, model = ?4, model_name = ?5, format = ?6, thinking = ?7, answer_length = ?8,
-  web_tools = ?9, updated_by = ?10, updated_at = ?11 WHERE user_id = ?1`;
+  web_tools = ?9, prompt_template = ?10, thinking_levels = ?11, updated_by = ?12, updated_at = ?13 WHERE user_id = ?1`;
 
 /** Puts ?1 in the open rooms the JSON list ?2 names, of those there are, keeping the memberships it has. */
 const GRANT_PICKED_ROOMS = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
@@ -2311,6 +2364,7 @@ export class WorkspaceStore {
       assistant: assistantIn(settings),
       assistantMost: assistantMostIn(settings),
       assistantInstructions: assistantInstructionsIn(settings),
+      assistantPromptTemplate: assistantPromptTemplateIn(settings),
       huddles: huddlesIn(settings),
       deployedAddress: deployedAddressIn(settings),
       otherAddresses: otherAddressesIn(settings),
@@ -3321,8 +3375,8 @@ export class WorkspaceStore {
 
   /**
    * Applies `events` from room `roomId`'s log, in order and in one transaction, with `viewerIds`, who
-   * is viewing the room: a message marks it unread for the members who aren't, and a read clears the
-   * reader's mark. The latest message also records when the room was last active. A reply sent only to
+   * is viewing the room, or for a message whose event names its own `viewerIds`, those: a message marks
+   * it unread for the members who aren't, and a read clears the reader's mark. The latest message also records when the room was last active. A reply sent only to
    * its thread does neither, and isn't pushed to those its event's `viewerIds` say are viewing the thread,
    * in place of those viewing the room. Those the Workspace has applied before change nothing. Answers
    * whose marks changed, and whether each is now unread, and, when a message has come in a DM, when the
@@ -3341,12 +3395,12 @@ export class WorkspaceStore {
     const statements: Statement[] = [];
     const applied = events.map((event) => {
       const { seq, kind, userId, at } = event;
-      const mark = isNewMessage(event) ? (event.threadOnly ? null : statement(MARK_UNREAD, at, roomId, userId, viewers, seq)) : statement(MARK_READ, roomId, userId, seq);
+      const seeing = event.viewerIds === undefined ? viewers : JSON.stringify(event.viewerIds);
+      const mark = isNewMessage(event) ? (event.threadOnly ? null : statement(MARK_UNREAD, at, roomId, userId, seeing, seq)) : statement(MARK_READ, roomId, userId, seq);
       const marks = mark && statements.push(mark) - 1;
       const mentions = event.message ? JSON.stringify(event.message.mentionIds) : null;
       const followers = JSON.stringify(event.message?.followerIds ?? []);
       const inRoom = event.threadOnly ? 0 : 1;
-      const seeing = event.viewerIds === undefined ? viewers : JSON.stringify(event.viewerIds);
       const pushes = pushing && mentions !== null ? statements.push(statement(MESSAGE_PUSHES, roomId, userId, seeing, mentions, seq, guests ? 1 : 0, inRoom, followers)) - 1 : null;
       // A bot's reply is never delivered to webhooks, as Campfire posts one without delivering it, nor is
       // @ember's answer, which is a reply too.
@@ -3356,10 +3410,10 @@ export class WorkspaceStore {
     const told = statements.length;
     statements.push(...(message ? [statement(TOLD_OF_DIRECT_MESSAGE, roomId, message.seq), statement(APPLIED_WITH_MESSAGE, last, roomId, messageAt!)] : [statement(APPLIED, last, roomId)]));
     const results = await this.db.batch(statements);
-    const marks = new Map<UserId, boolean>();
+    const marks = new Map<UserId, string | null>();
     for (const { event, marks: at } of applied) {
       if (at === null) continue;
-      for (const { user_id } of results[at] as UserIdRow[]) marks.set(user_id, isNewMessage(event));
+      for (const { user_id } of results[at] as UserIdRow[]) marks.set(user_id, isNewMessage(event) ? event.at : null);
     }
     const pushes = applied.flatMap(({ event, pushes: at }) => (at === null ? [] : messagePushes(roomId, event, results[at] as PushRow[])));
     const deliveries = applied.flatMap(({ event, bots: at }) => (at === null ? [] : messageDeliveries(event, results[at] as MessageBotRow[])));
@@ -3692,6 +3746,11 @@ export class WorkspaceStore {
     return row ? assistantPicksOf(row) : null;
   }
 
+  /** Changes the skin tone `userId` chose for emoji to `skinTone`. */
+  async setSkinTone(userId: UserId, skinTone: SkinTone): Promise<void> {
+    await this.db.run("UPDATE users SET skin_tone = ? WHERE id = ?", skinTone, userId);
+  }
+
   /** Changes what `userId` picks of @ember's dials and its model to `changes`, keeping what they leave out. */
   async changeAssistantPicks(userId: UserId, changes: YourAssistantChanges): Promise<void> {
     await this.db.run(CHANGE_ASSISTANT_PICKS, changes.thinking ?? null, changes.length ?? null, changes.model === undefined ? 0 : 1, changes.model ?? null, userId);
@@ -3699,14 +3758,16 @@ export class WorkspaceStore {
 
   /**
    * Changes Ember AI while it's on to `assistant`, the most each of @ember's dials goes to for anyone's
-   * questions to `most`, and what Ember adds to @ember's instructions to `instructions`, in one batch,
-   * without recording when, as no page's address goes by any of them.
+   * questions to `most`, what Ember adds to @ember's instructions to `instructions`, and what it adds
+   * around them to `promptTemplate`, null for its own, in one batch, without recording when, as no page's
+   * address goes by any of them.
    */
-  async changeAssistant(assistant: SavedAssistant, most: AnswerLevels, instructions: string): Promise<void> {
+  async changeAssistant(assistant: SavedAssistant, most: AnswerLevels, instructions: string, promptTemplate: string | null): Promise<void> {
     await this.db.batch([
       statement(REMEMBER_ASSISTANT, assistantSetting(assistant)),
       statement(REMEMBER_ASSISTANT_LIMITS, JSON.stringify(most)),
       statement(REMEMBER_ASSISTANT_INSTRUCTIONS, JSON.stringify(instructions)),
+      statement(REMEMBER_ASSISTANT_PROMPT_TEMPLATE, JSON.stringify(promptTemplate)),
     ]);
   }
 

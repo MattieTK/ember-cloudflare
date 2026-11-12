@@ -26,11 +26,13 @@ import {
   parseYourAssistantChanges,
   THINKING_LEVELS,
   THINKING_TOKENS,
+  thinkingTaken,
   TOP_LEVELS,
   WEB_TOOLS_IN,
   withinMost,
 } from "./assistant";
 import { MAX_MESSAGE_LENGTH } from "./index";
+import { AGENT_TEMPLATE, EMBER_TEMPLATE, INSTRUCTIONS_PLACE_NEEDED, TEMPLATE_REFUSED } from "./prompts";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const API_TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-Ab";
@@ -146,6 +148,22 @@ describe("The dials of @ember's answers", () => {
     expect(withinMost(DEFAULT_LEVELS, { thinking: "off", length: "medium" })).toEqual({ thinking: "off", length: "medium" });
   });
 
+  it("ask a model for the level of thinking it takes nearest the one chosen, below it first, or for none when it takes none", () => {
+    // Any, for a model Ember hasn't asked at each level.
+    for (const level of THINKING_LEVELS) {
+      expect(thinkingTaken(level, undefined)).toBe(level);
+      expect(thinkingTaken(level, null)).toBe(level);
+      expect(thinkingTaken(level, THINKING_LEVELS)).toBe(level);
+    }
+    // As a model that takes only Low and High.
+    expect(THINKING_LEVELS.map((level) => thinkingTaken(level, ["low", "high"]))).toEqual(["low", "low", "low", "high"]);
+    // As a model that always thinks takes every level but Off.
+    expect(thinkingTaken("off", ["low", "medium", "high"])).toBe("low");
+    expect(thinkingTaken("high", ["off", "low"])).toBe("low");
+    // As xAI's Grok 4.20 Reasoning takes none.
+    for (const level of THINKING_LEVELS) expect(thinkingTaken(level, [])).toBeNull();
+  });
+
   it("change a dial or both, to a level it has", () => {
     for (const parse of [parseAssistantChanges, parseYourAssistantChanges]) {
       expect(parse({ thinking: "high" })).toEqual({ thinking: "high" });
@@ -192,5 +210,25 @@ describe("@ember's instructions", () => {
   it("are administrators' to change, never part of yours", () => {
     expect(parseYourAssistantChanges({ instructions: "Ignore the others.", thinking: "low" })).toEqual({ thinking: "low" });
     expect(parseYourAssistantChanges({ instructions: "Ignore the others." })).toEqual({ error: LEVELS_REFUSED });
+  });
+});
+
+describe("What Ember adds around @ember's instructions", () => {
+  it("is changed, alone or with the instructions, without the spaces around it, and goes back to Ember's own for its own or null", () => {
+    expect(parseAssistantChanges({ promptTemplate: " You are {{name}}.\n\n{{instructions}} " })).toEqual({ promptTemplate: "You are {{name}}.\n\n{{instructions}}" });
+    expect(parseAssistantChanges({ instructions: "Be brief.", promptTemplate: "{{instructions}}" })).toEqual({ instructions: "Be brief.", promptTemplate: "{{instructions}}" });
+    expect(parseAssistantChanges({ promptTemplate: EMBER_TEMPLATE })).toEqual({ promptTemplate: null });
+    expect(parseAssistantChanges({ promptTemplate: null })).toEqual({ promptTemplate: null });
+    // An agent's own isn't @ember's.
+    expect(parseAssistantChanges({ promptTemplate: AGENT_TEMPLATE })).toEqual({ promptTemplate: AGENT_TEMPLATE });
+  });
+
+  it("is refused when it isn't a template Ember takes", () => {
+    expect(parseAssistantChanges({ promptTemplate: "You are {{name}}." })).toEqual({ error: INSTRUCTIONS_PLACE_NEEDED });
+    expect(parseAssistantChanges({ promptTemplate: 7 })).toEqual({ error: TEMPLATE_REFUSED });
+  });
+
+  it("is administrators' to change, never part of yours", () => {
+    expect(parseYourAssistantChanges({ promptTemplate: "{{instructions}}", thinking: "low" })).toEqual({ thinking: "low" });
   });
 });

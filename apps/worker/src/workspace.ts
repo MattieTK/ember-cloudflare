@@ -66,6 +66,7 @@ import {
   type SentTestEmail,
   type SharedRoom,
   type Sidebar,
+  type SkinTone,
   type User,
   type UserId,
   type UserStatus,
@@ -81,6 +82,7 @@ import {
   withinMost,
   type AnswerLevels,
   type AssistantChanges,
+  type ThinkingLevel,
   type WebTool,
   type YourAssistant,
   type YourAssistantChanges,
@@ -292,10 +294,10 @@ const accountOf = (
 });
 
 /** The parts of the account that Ember AI's settings are made of. */
-type AssistantAccount = Pick<JoinableAccount, "assistant" | "assistantMost" | "assistantInstructions">;
+type AssistantAccount = Pick<JoinableAccount, "assistant" | "assistantMost" | "assistantInstructions" | "assistantPromptTemplate">;
 
 /** Ember AI as the AI assistant tab shows `account`'s to administrators, but for @ember's avatar, or null while it's off. */
-const assistantSettingsOf = ({ assistant, assistantMost, assistantInstructions }: AssistantAccount): Omit<AssistantSettings, "avatarUrl" | "avatar"> | null =>
+const assistantSettingsOf = ({ assistant, assistantMost, assistantInstructions, assistantPromptTemplate }: AssistantAccount): Omit<AssistantSettings, "avatarUrl" | "avatar"> | null =>
   assistant && {
     accountId: assistant.accountId,
     model: assistant.model,
@@ -303,6 +305,7 @@ const assistantSettingsOf = ({ assistant, assistantMost, assistantInstructions }
     most: assistantMost,
     webTools: WEB_TOOLS_IN[assistant.format].length === 0 ? null : assistant.webTools,
     instructions: assistantInstructions,
+    promptTemplate: assistantPromptTemplate,
   };
 
 /**
@@ -338,6 +341,9 @@ const levelsOf = (picked: AssistantPicks | null, most: AnswerLevels): AnswerLeve
  */
 const pickedModelOf = (assistant: SavedAssistant, picked: AssistantPicks | null): SavedModel | null => assistant.models.find(({ id }) => id === picked?.model) ?? null;
 
+/** The model that answers someone, as the models people can pick list it: the one they `picked` (`pickedModelOf`), or else the one that answers everyone. */
+const answeringModelOf = (assistant: SavedAssistant, picked: SavedModel | null): SavedModel | undefined => picked ?? assistant.models.find(({ id }) => id === assistant.model);
+
 /**
  * @ember's answers to someone who `picked` their levels and model, as their profile shows them with
  * `account`'s most and models, or null while Ember AI is off.
@@ -354,9 +360,9 @@ function yourAssistantOf(account: Pick<JoinableAccount, "assistant" | "assistant
  * twice, or `chosen` alone, as when Ember AI was off, so that the models stay as many as administrators
  * added. `chosen` is called by the name it's given, or else as it was listed, or as Ember knows it.
  */
-function modelsAfterSetup(previous: SavedAssistant | null, { model, format, name }: AssistantChoice): SavedModel[] {
+function modelsAfterSetup(previous: SavedAssistant | null, { model, format, thinkingLevels, name }: AssistantChoice): SavedModel[] {
   const models = previous?.models ?? [];
-  const chosen = { id: model, name: name ?? models.find(({ id }) => id === model)?.name ?? modelName(model), format };
+  const chosen = { id: model, name: name ?? models.find(({ id }) => id === model)?.name ?? modelName(model), format, ...(thinkingLevels && { thinkingLevels }) };
   const others = models.filter(({ id }) => id !== previous?.model);
   if (others.some(({ id }) => id === model)) return others.map((kept) => (kept.id === model ? chosen : kept));
   return others.toSpliced(Math.max(0, models.findIndex(({ id }) => id === previous?.model)), 0, chosen);
@@ -364,10 +370,10 @@ function modelsAfterSetup(previous: SavedAssistant | null, { model, format, name
 
 /**
  * What asking an agent's model found, through the Cloudflare account and API token `through` names: the
- * model, what it's called, the format it took its test question in, and what it may do on the web, as
- * Search the web found it, or nothing while that's off.
+ * model, what it's called, the format it took its test question in, the levels of thinking it takes, and
+ * what it may do on the web, as Search the web found it, or nothing while that's off.
  */
-export interface AskedModel extends Pick<AgentSetup, "model" | "modelName" | "format" | "webTools"> {
+export interface AskedModel extends Pick<AgentSetup, "model" | "modelName" | "format" | "thinkingLevels" | "webTools"> {
   through: Pick<Gateway, "accountId" | "apiToken">;
 }
 
@@ -379,19 +385,25 @@ export interface AskedModel extends Pick<AgentSetup, "model" | "modelName" | "fo
 export const asksModel = (agent: Pick<AgentSetup, "model" | "webTools">, changes: AgentChanges): boolean =>
   (changes.model !== undefined && changes.model !== agent.model) || (changes.webSearch === true && agent.webTools.length === 0);
 
-/** An agent's setup, of what it does, its instructions and its levels, with its model as `asked` found it. */
+/** An agent's setup, of what it does, its instructions and what Ember adds around them, and its levels, with its model as `asked` found it. */
 const setupOf = (
-  { description, instructions, levels }: Pick<AgentSetup, "description" | "instructions" | "levels">,
-  { model, modelName, format, webTools }: Pick<AgentSetup, "model" | "modelName" | "format" | "webTools">,
-): AgentSetup => ({ description, instructions, model, modelName, format, levels, webTools });
+  { description, instructions, promptTemplate, levels }: Pick<AgentSetup, "description" | "instructions" | "promptTemplate" | "levels">,
+  { model, modelName, format, thinkingLevels, webTools }: Pick<AgentSetup, "model" | "modelName" | "format" | "thinkingLevels" | "webTools">,
+): AgentSetup => ({ description, instructions, promptTemplate, model, modelName, format, thinkingLevels, levels, webTools });
+
+/** Whether two lists of the levels of thinking a model takes are the same, null for a model Ember hasn't asked at each. */
+const sameLevels = (levels: ThinkingLevel[] | null, others: ThinkingLevel[] | null): boolean =>
+  levels === null || others === null ? levels === others : levels.length === others.length && levels.every((level) => others.includes(level));
 
 /** Whether two setups of an agent are the same, so that saving one in place of the other changes nothing. */
 const sameSetup = (setup: AgentSetup, other: AgentSetup): boolean =>
   setup.description === other.description &&
   setup.instructions === other.instructions &&
+  setup.promptTemplate === other.promptTemplate &&
   setup.model === other.model &&
   setup.modelName === other.modelName &&
   setup.format === other.format &&
+  sameLevels(setup.thinkingLevels, other.thinkingLevels) &&
   setup.levels.thinking === other.levels.thinking &&
   setup.levels.length === other.levels.length &&
   setup.webTools.length === other.webTools.length &&
@@ -488,6 +500,8 @@ export interface AssistantAccess extends BotAccess {
   picked: boolean;
   /** An agent's instructions, or those administrators added to @ember's. */
   instructions: string;
+  /** What Ember adds around them, as administrators changed it, or null for Ember's own. */
+  promptTemplate: string | null;
   community: string;
   levels: AnswerLevels;
   /** What the gateway's model may do on the web: what Search the web lets @ember do, of what that model's format has tools for. */
@@ -509,7 +523,7 @@ export interface AgentTrialAccess {
   through: Pick<Gateway, "accountId" | "apiToken">;
   community: string;
   addresses: string[];
-  saved: Pick<StoredAgentSettings, "id" | "model" | "modelName" | "format" | "webTools"> | null;
+  saved: Pick<StoredAgentSettings, "id" | "model" | "modelName" | "format" | "thinkingLevels" | "webTools"> | null;
 }
 
 /** How Set up Ember AI has Ember AI ask AI Gateway (`Gateway`), with the name of its model, if it was given one. */
@@ -622,7 +636,7 @@ function send(ws: WebSocket, frame: WorkspaceServerFrame): void {
 }
 
 /** Who a session signs in, as the app keeps them. */
-const meOf = ({ user, administrator }: StoredSession): Me => ({ ...user, administrator });
+const meOf = ({ user, administrator, skinTone }: StoredSession): Me => ({ ...user, administrator, ...(skinTone ? { skinTone } : {}) });
 
 /** Whether someone or a bot named `name` takes @ember's name by being renamed `rename`, which they can't, unless it was theirs already (`isReservedName`). */
 const takesReservedName = (name: string, rename: string) => rename !== name && isReservedName(rename) && !isReservedName(name);
@@ -1218,15 +1232,15 @@ export class Workspace extends DurableObject<Env> {
 
   /**
    * Changes the most each of @ember's dials goes to for anyone's questions, which of the models people
-   * can pick it answers everyone else with, and what Ember adds to its instructions, by `changes`, as the
-   * administrator `credentials` signs in, answering Ember AI as the AI assistant tab then shows it: "off"
-   * while it's off, "not listed" for a model people can't pick, "forbidden" for anyone else, and null
-   * without a valid session. Choosing another model turns Search the web off, as Set up Ember AI choosing
-   * one does (`webToolsKept`).
+   * can pick it answers everyone else with, what Ember adds to its instructions, and what it adds around
+   * them, by `changes`, as the administrator `credentials` signs in, answering Ember AI as the AI
+   * assistant tab then shows it: "off" while it's off, "not listed" for a model people can't pick,
+   * "forbidden" for anyone else, and null without a valid session. Choosing another model turns Search
+   * the web off, as Set up Ember AI choosing one does (`webToolsKept`).
    */
   async changeAssistantSettings(
     credentials: Credentials,
-    { model, instructions, ...levels }: AssistantChanges,
+    { model, instructions, promptTemplate, ...levels }: AssistantChanges,
   ): Promise<{ assistant: AssistantSettings } | "off" | "not listed" | "forbidden" | null> {
     return this.administerAccount(credentials, async (account) => {
       if (!account.assistant) return "off";
@@ -1234,7 +1248,7 @@ export class Workspace extends DurableObject<Env> {
       if (chosen === undefined) return "not listed";
       const asked = chosen && { accountId: account.assistant.accountId, model: chosen.id, format: chosen.format };
       const assistant = asked ? { ...account.assistant, ...asked, ...webToolsKept(account.assistant, asked, new Date().toISOString()) } : account.assistant;
-      return this.storeAssistant(account, assistant, { ...account.assistantMost, ...levels }, instructions);
+      return this.storeAssistant(account, assistant, { ...account.assistantMost, ...levels }, instructions, promptTemplate);
     });
   }
 
@@ -1307,17 +1321,19 @@ export class Workspace extends DurableObject<Env> {
   }
 
   /**
-   * Stores Ember AI as `assistant` has it, while it's on, the most of each dial as `most`, and what Ember
-   * adds to @ember's instructions as `instructions`, answering Ember AI as the AI assistant tab then shows it.
+   * Stores Ember AI as `assistant` has it, while it's on, the most of each dial as `most`, what Ember adds
+   * to @ember's instructions as `instructions`, and what it adds around them as `promptTemplate`,
+   * answering Ember AI as the AI assistant tab then shows it.
    */
   private async storeAssistant(
     account: JoinableAccount,
     assistant: SavedAssistant,
     most = account.assistantMost,
     instructions = account.assistantInstructions,
+    promptTemplate = account.assistantPromptTemplate,
   ): Promise<{ assistant: AssistantSettings }> {
-    const changed = await this.storeAccount({ ...account, assistant, assistantMost: most, assistantInstructions: instructions }, () =>
-      this.store.changeAssistant(assistant, most, instructions),
+    const changed = await this.storeAccount({ ...account, assistant, assistantMost: most, assistantInstructions: instructions, assistantPromptTemplate: promptTemplate }, () =>
+      this.store.changeAssistant(assistant, most, instructions, promptTemplate),
     );
     return { assistant: (await this.assistantSettings(changed))! };
   }
@@ -1605,6 +1621,7 @@ export class Workspace extends DurableObject<Env> {
       user: { id: sortableId(), name: administrator.name },
       administrator: true,
       guest: false,
+      skinTone: 0,
       lastActiveAt: Date.now(),
     };
     const account = { id: sortableId(), name: ACCOUNT_NAME, joinCode: newJoinCode() };
@@ -1631,6 +1648,7 @@ export class Workspace extends DurableObject<Env> {
       assistant: null,
       assistantMost: TOP_LEVELS,
       assistantInstructions: "",
+      assistantPromptTemplate: null,
       huddles: null,
       deployedAddress: null,
       otherAddresses: [],
@@ -1770,7 +1788,7 @@ export class Workspace extends DurableObject<Env> {
    */
   private async addMember(person: Omit<NewPerson, "id">, tokenDigest: string, client: Client): Promise<Me | "agent's name" | null> {
     if (await this.takesAgentsName(null, person.name)) return "agent's name";
-    const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name: person.name }, administrator: false, guest: false, lastActiveAt: Date.now() };
+    const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name: person.name }, administrator: false, guest: false, skinTone: 0, lastActiveAt: Date.now() };
     try {
       await this.store.createMember({ ...person, id: session.user.id }, session.id, tokenDigest, client, new Date(session.lastActiveAt).toISOString());
     } catch (error) {
@@ -1883,7 +1901,7 @@ export class Workspace extends DurableObject<Env> {
     return this.oneAtATime(async () => {
       if ((await this.joinableAccount())?.memberfulSignIn) return "memberful";
       if (await this.takesAgentsName(null, name)) return "agent's name";
-      const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name }, administrator: false, guest: true, lastActiveAt: Date.now() };
+      const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name }, administrator: false, guest: true, skinTone: 0, lastActiveAt: Date.now() };
       await this.store.createGuest(session.user, session.id, tokenDigest, client, new Date(session.lastActiveAt).toISOString());
       this.sessions.remember(tokenDigest, session);
       await this.publishPerson(session.user.id);
@@ -1927,7 +1945,7 @@ export class Workspace extends DurableObject<Env> {
       const agents = await this.store.agentEntries();
       const free = (name: string) => !agents.some((agent) => sameName(agent.name, name));
       const name = member.names.find(free) ?? namelessMember(free);
-      const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name }, administrator: false, guest: false, lastActiveAt: Date.now() };
+      const session: StoredSession = { id: sortableId(), user: { id: sortableId(), name }, administrator: false, guest: false, skinTone: 0, lastActiveAt: Date.now() };
       const person = { ...session.user, emailAddress: member.emailAddress };
       try {
         await this.store.createLinkedMember(person, linkedAccountOf(issuer, member), readAt, session.id, tokenDigest, client, new Date(session.lastActiveAt).toISOString());
@@ -2454,6 +2472,22 @@ export class Workspace extends DurableObject<Env> {
     return saved.involvement;
   }
 
+  /**
+   * Gives the person `credentials` signs in the skin tone `skinTone` for emoji, answering it, or null
+   * without a valid session. Every tab of theirs hears it, in every browser.
+   */
+  async setSkinTone(credentials: Credentials, skinTone: SkinTone): Promise<SkinTone | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    // Their sessions read the tone with them, so they're read again.
+    await this.sessions.change(
+      (session) => session.user.id === user.id,
+      () => this.store.setSkinTone(user.id, skinTone),
+    );
+    this.tell([user.id], { type: "skin_tone.changed", skinTone });
+    return skinTone;
+  }
+
   /** Tells every tab of `userId`'s what their stars are now. */
   private starsChanged(userId: UserId, favorites: Favorites) {
     this.tell([userId], { type: "favorites.changed", favorites });
@@ -2855,7 +2889,7 @@ export class Workspace extends DurableObject<Env> {
     const agent = agentId === null ? null : await this.store.activeAgent(agentId);
     if (agentId !== null && !agent) return "not found";
     const through = { accountId: opened.accountId, apiToken: opened.apiToken };
-    const saved = agent && { id: agent.id, model: agent.model, modelName: agent.modelName, format: agent.format, webTools: agent.webTools };
+    const saved = agent && { id: agent.id, model: agent.model, modelName: agent.modelName, format: agent.format, thinkingLevels: agent.thinkingLevels, webTools: agent.webTools };
     return { asker: { id: user.id, name: user.name }, through, community: account.name, addresses: addressesOf(account), saved };
   }
 
@@ -2879,7 +2913,7 @@ export class Workspace extends DurableObject<Env> {
       if ((await this.store.agentEntries()).length >= MAX_AGENTS) return "full";
       if ((await this.store.namesInUse(null)).some((name) => sameName(name, agent.name))) return "name taken";
       const id = sortableId();
-      const setup = setupOf({ ...agent, levels: { thinking: agent.thinking, length: agent.length } }, asked);
+      const setup = setupOf({ ...agent, promptTemplate: agent.promptTemplate ?? null, levels: { thinking: agent.thinking, length: agent.length } }, asked);
       await this.store.createAgent({ id, name: agent.name, rooms: agent.rooms, avatar, createdBy: user.id, ...setup }, new Date().toISOString());
       await this.publishPerson(id);
       return this.shownAgentSettings((await this.store.activeAgent(id))!);
@@ -2916,7 +2950,8 @@ export class Workspace extends DurableObject<Env> {
         // What Cloudflare's catalog calls a model can change while the model doesn't.
         const model = asked ?? { ...agent, modelName: changes.modelName ?? agent.modelName, webTools: changes.webSearch === false ? [] : agent.webTools };
         const levels = { thinking: changes.thinking ?? agent.levels.thinking, length: changes.length ?? agent.levels.length };
-        const setup = setupOf({ description: changes.description ?? agent.description, instructions: changes.instructions ?? agent.instructions, levels }, model);
+        const promptTemplate = changes.promptTemplate === undefined ? agent.promptTemplate : changes.promptTemplate;
+        const setup = setupOf({ description: changes.description ?? agent.description, instructions: changes.instructions ?? agent.instructions, promptTemplate, levels }, model);
         const rooms = changes.rooms === undefined || sameRooms(agent.rooms, changes.rooms) ? undefined : changes.rooms;
         // Taking away an avatar that isn't there changes nothing.
         const picture = avatar && (avatar.picture !== null || agent.avatar !== null) ? avatar.picture : undefined;
@@ -3399,7 +3434,7 @@ export class Workspace extends DurableObject<Env> {
     if (events.length === 0) return { pushes: [], webhooks: [], asks: [] };
     const { on: pushing } = await webPush(this.env);
     const { marks, active, pushes, webhooks, asks } = await this.store.applyRoomEvents(roomId, events, viewerIds, pushing, guestSignIn(this.env));
-    for (const [userId, unread] of marks) this.tell([userId], { type: unread ? "room.unread" : "room.read", roomId });
+    for (const [userId, at] of marks) this.tell([userId], at === null ? { type: "room.read", roomId } : { type: "room.unread", roomId, at });
     if (active) this.tell(active.userIds, { type: "room.active", roomId, at: active.at });
     return { pushes, webhooks, asks };
   }
@@ -3534,10 +3569,10 @@ export class Workspace extends DurableObject<Env> {
   /**
    * @ember in room `roomId`, with when this checked, how it asks AI Gateway, or null while its API token
    * doesn't open (`assistantGateway`), with the model whoever asked, `askerId`, picked, while people can
-   * pick it, the instructions administrators added, the community's name, what @ember may do on the web,
-   * with whichever model answers, of what its format has tools for, and Ember's addresses: null once
-   * Ember AI is off or @ember isn't in the room, so that turning Ember AI off, or taking @ember out of a
-   * room, stops what's on its way there.
+   * pick it, the instructions administrators added and what Ember adds around them, the community's
+   * name, what @ember may do on the web, with whichever model answers, of what its format has tools for,
+   * and Ember's addresses: null once Ember AI is off or @ember isn't in the room, so that turning Ember
+   * AI off, or taking @ember out of a room, stops what's on its way there.
    */
   private async assistantIn(roomId: RoomId, askerId: UserId): Promise<AssistantAccess | null> {
     // Before anything is read, as `roomAccess` takes it.
@@ -3546,31 +3581,33 @@ export class Workspace extends DurableObject<Env> {
     if (!account?.assistant || !member) return null;
     const opened = await this.openedAssistant(account);
     const picked = pickedModelOf(account.assistant, picks);
-    const gateway = opened && picked ? { ...opened, model: picked.id, format: picked.format } : opened;
+    const thinkingLevels = answeringModelOf(account.assistant, picked)?.thinkingLevels;
+    const gateway = opened && { ...opened, ...(picked && { model: picked.id, format: picked.format }), thinkingLevels };
     const levels = levelsOf(picks, account.assistantMost);
     const { format } = picked ?? account.assistant;
     const webTools = account.assistant.webTools.filter((tool) => WEB_TOOLS_IN[format].includes(tool));
     const webSearchOn = account.assistant.webTools.includes("search");
     const bot = { id: ASSISTANT_ID, name: ASSISTANT_NAME };
-    const { assistantInstructions: instructions } = account;
-    return { bot, authorizedAt, gateway, picked: picked !== null, instructions, community: account.name, levels, webTools, webSearchOn, addresses: addressesOf(account) };
+    const { assistantInstructions: instructions, assistantPromptTemplate: promptTemplate } = account;
+    return { bot, authorizedAt, gateway, picked: picked !== null, instructions, promptTemplate, community: account.name, levels, webTools, webSearchOn, addresses: addressesOf(account) };
   }
 
   /**
    * Agent `agentId` in room `roomId`, as `assistantIn` finds @ember: asking AI Gateway through Ember AI's
-   * account and API token, with its own model, instructions and levels, and what it may do on the web,
-   * of what its model's format has tools for: null once Ember AI is off, or the agent is deleted or taken
-   * out of the room.
+   * account and API token, with its own model, instructions, what Ember adds around them, and levels, and
+   * what it may do on the web, of what its model's format has tools for: null once Ember AI is off, or
+   * the agent is deleted or taken out of the room.
    */
   private async agentIn(roomId: RoomId, agentId: UserId): Promise<AssistantAccess | null> {
     const authorizedAt = Date.now();
     const [account, agent] = await Promise.all([this.joinableAccount(), this.store.answeringAgent(roomId, agentId)]);
     if (!account?.assistant || !agent) return null;
     const opened = await this.openedAssistant(account);
-    const gateway = opened && { ...opened, model: agent.model, format: agent.format };
+    const gateway = opened && { ...opened, model: agent.model, format: agent.format, thinkingLevels: agent.thinkingLevels ?? undefined };
     const webTools = agent.webTools.filter((tool) => WEB_TOOLS_IN[agent.format].includes(tool));
     const bot = { id: agentId, name: agent.name };
-    return { bot, authorizedAt, gateway, picked: false, instructions: agent.instructions, community: account.name, levels: agent.levels, webTools, webSearchOn: webTools.includes("search"), addresses: addressesOf(account) };
+    const { instructions, promptTemplate, levels } = agent;
+    return { bot, authorizedAt, gateway, picked: false, instructions, promptTemplate, community: account.name, levels, webTools, webSearchOn: webTools.includes("search"), addresses: addressesOf(account) };
   }
 
   /**

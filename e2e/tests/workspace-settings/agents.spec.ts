@@ -2,7 +2,7 @@ import type { AgentAnswer, Agents, NewAgent } from "@ember/protocol/agents";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { administratorSession, cookieHeader, editorField, expect, SAME_ORIGIN, signInAsAdministrator, test, useOwnAddress } from "../../fixtures";
 import { AI_GATEWAY_ACCOUNT } from "../../projects/workspace-settings";
-import { HELLO, startFakeGateway, type FakeGateway } from "./fake-gateway";
+import { CARD_HEADER, CARD_LINK, CARD_QUESTION, CARDED, HELLO, startFakeGateway, type FakeGateway } from "./fake-gateway";
 
 // The AI assistant tab's Agents card, New agent and an agent's page, with Try it, an agent answering a
 // mention, and its badge and profile, on the second test server, through the AI Gateway this spec fakes.
@@ -159,6 +159,73 @@ test.describe("Agents", () => {
     // Its page is gone.
     const gone = await page.goto(`/account/agents/${scout.id}/edit`);
     expect(gone!.status()).toBe(404);
+  });
+
+  test("the administrator modifies what Ember adds around an agent's instructions, with caution, which Ember keeps until Use Ember's own puts its own back", async ({ page, request }) => {
+    const scout = await makeAgent(request, "Scout");
+    const card = await openAgents(page);
+    await card.getByRole("link", { name: "Edit Scout" }).click();
+    await page.getByText("What Ember adds around them").click();
+    const caution = page.getByRole("region", { name: "Modify with caution" });
+    await expect(caution).toContainText("Every answer Scout gives starts from these words.");
+    await caution.getByRole("button", { name: "Modify" }).click();
+    const template = page.getByRole("textbox", { name: "What Ember adds around them" });
+    await expect(template).toBeFocused();
+    await expect(template).toHaveValue(/^You are \{\{name\}\}, an AI agent in the team chat "\{\{community\}\}"\./);
+    await template.fill("You are {{name}}, the scout of {{community}}.\n\n{{instructions}}\n\nAnswer {{asker}} in {{where}}.");
+    await expect(page.locator("details")).toContainText("You are Scout, the scout of");
+
+    // Try it asks with it before it's saved.
+    const tryIt = page.getByRole("region", { name: "Try it" });
+    await tryIt.getByRole("textbox", { name: "Question" }).fill("What did we decide?");
+    await tryIt.getByRole("button", { name: "Ask" }).click();
+    await expect(tryIt).toContainText(HELLO);
+    expect(gateway.asked.at(-1)!.body.system).toMatch(/^You are Scout, the scout of [^\n]+\.\n\nSum up the conversation so far as decisions and to-dos\.\n\nAnswer Ada Lovelace in a direct message\.$/);
+
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(rowOf(card, "Scout")).toBeVisible();
+    // Ember keeps it.
+    await page.goto(`/account/agents/${scout.id}/edit`);
+    await expect(page.getByText("Modified", { exact: true })).toBeVisible();
+    await page.getByText("What Ember adds around them").click();
+    await expect(template).toHaveValue("You are {{name}}, the scout of {{community}}.\n\n{{instructions}}\n\nAnswer {{asker}} in {{where}}.");
+
+    await page.getByRole("button", { name: "Use Ember's own" }).click();
+    await expect(page.getByText("Modified", { exact: true })).toBeHidden();
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(rowOf(card, "Scout")).toBeVisible();
+    await page.goto(`/account/agents/${scout.id}/edit`);
+    await page.getByText("What Ember adds around them").click();
+    await expect(page.getByRole("region", { name: "Modify with caution" }).getByRole("button", { name: "Modify" })).toBeVisible();
+    await expect(page.getByText("Modified", { exact: true })).toBeHidden();
+  });
+
+  test("an agent shows a card under its answer, from the Slack payload it writes, in Try it and in a DM with it", async ({ page, request }) => {
+    const recap = await makeAgent(request, "Recap");
+    const card = await openAgents(page);
+    await card.getByRole("link", { name: "Edit Recap" }).click();
+    const tryIt = page.getByRole("region", { name: "Try it" });
+    await tryIt.getByRole("textbox", { name: "Question" }).fill(CARD_QUESTION);
+    await tryIt.getByRole("button", { name: "Ask" }).click();
+    await expect(tryIt).toContainText(CARDED);
+    await expect(tryIt.getByRole("article", { name: CARD_HEADER }).getByRole("link", { name: "Open the plan" })).toHaveAttribute("href", CARD_LINK);
+    // Its model is told how to write one.
+    expect(gateway.asked.at(-1)!.body.system).toContain("as JSON in a code block that starts with ```slack.");
+
+    await page.goto(`/users/${recap.id}`);
+    await page.getByRole("button", { name: "Ping Recap" }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Direct message with Recap");
+    const composer = editorField(page, "Write a message");
+    await composer.pressSequentially(CARD_QUESTION);
+    await composer.press("Enter");
+    const status = page.getByRole("article", { name: CARD_HEADER });
+    const answer = page.getByRole("article").filter({ has: status });
+    await expect(answer).toContainText(CARDED);
+    await expect(answer.getByRole("heading", { level: 3 })).toHaveText(/^Recap Agent/);
+    await expect(status).toContainText("Stage:Beta");
+    await expect(status.getByRole("link", { name: "Open the plan" })).toHaveAttribute("href", CARD_LINK);
+    // Its payload shows as the card, not as code.
+    await expect(answer.locator("pre")).toHaveCount(0);
   });
 
   test("an agent's name has the Agent badge in the mention prompt and on its answers, and its profile says what it does and runs on", async ({ page, request }) => {
